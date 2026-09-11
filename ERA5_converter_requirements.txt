@@ -1,0 +1,7 @@
+# Python >= 3.12
+# Verified together on 2026-09-11 with:
+# numpy 2.5.3, xarray 2026.7.0, netCDF4 1.7.4, zarr 3.3.0
+numpy>=1.26
+xarray>=2024.1
+netCDF4>=1.6
+zarr>=3.3,<4

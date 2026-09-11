@@ -1,0 +1,34 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 虚拟环境
+.venv/
+.venv*/
+venv/
+
+# 编辑器及工具缓存
+.vscode/
+.idea/
+.matplotlib/
+
+# 本地配置及凭据
+.env
+.env.*
+!.env.example
+
+# ERA5 原始、中间及输出数据
+*.nc
+!/mean.nc
+!/std.nc
+*.zarr/
+*.tmp
+*.log
+
+# 本地交付压缩包
+*.zip
