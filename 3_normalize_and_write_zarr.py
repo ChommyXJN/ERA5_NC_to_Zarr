@@ -17,7 +17,6 @@ Final processing rules
   Input values and supplied mean/std must already use the same final basis.
 * Output data are float16; statistics are float32 with float64 accumulation.
 * Channel coordinates are string labels, so xarray .sel(channel="z500") works.
-* Latitude is stored strictly increasingly from -90 to 90 at 0.25 degrees.
 
 The output is written to a staging directory and published only after full
 validation.  Existing output is never touched unless --overwrite is provided.
@@ -52,11 +51,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # ---------------------------------------------------------------------------
 
 SCHEMA_VERSION = "1.0"
-CONTENT_VERSION = "v3"
+CONTENT_VERSION = "v2"
 CHANNEL_COUNT = 116
 DEFAULT_RADIATION_SECONDS = 21600.0
 
-TARGET_LAT = np.linspace(-90.0, 90.0, 721, dtype=np.float32)
+TARGET_LAT = np.linspace(90.0, -90.0, 721, dtype=np.float32)
 TARGET_LON = np.arange(0.0, 360.0, 0.25, dtype=np.float32)
 
 BASE_LEVELS = (1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50)
@@ -439,12 +438,12 @@ class Regridder:
         key = (source_lat.tobytes(), source_lon.tobytes())
         weights = self.cache.get(key)
         if weights is None:
-            weights = self.weights(source_lat, TARGET_LAT) + self.weights(source_lon, TARGET_LON)
+            weights = self.weights(source_lat, TARGET_LAT[::-1]) + self.weights(source_lon, TARGET_LON)
             self.cache[key] = weights
         lat0, lat1, lat_w0, lat_w1, lon0, lon1, lon_w0, lon_w1 = weights
         along_lat = values[lat0] * lat_w0[:, None] + values[lat1] * lat_w1[:, None]
         result = along_lat[:, lon0] * lon_w0[None, :] + along_lat[:, lon1] * lon_w1[None, :]
-        return result.astype("f4", copy=False)
+        return result[::-1].astype("f4", copy=False)
 
 
 def parse_day(path: Path) -> date:
@@ -947,26 +946,6 @@ def write_dynamic(
         raise RuntimeError(f"wrote {global_time} time steps, expected {total_steps}")
 
 
-def validate_coordinate_grid(latitude: np.ndarray, longitude: np.ndarray) -> None:
-    """Require the canonical p25 grid, including ascending latitude order."""
-
-    latitude = np.asarray(latitude, dtype="f4")
-    longitude = np.asarray(longitude, dtype="f4")
-    if latitude.shape != (721,):
-        raise ValueError(f"latitude shape mismatch: {latitude.shape}")
-    if not np.all(np.isfinite(latitude)):
-        raise ValueError("latitude contains non-finite values")
-    latitude_steps = np.diff(latitude)
-    if not np.all(latitude_steps > 0):
-        raise ValueError("latitude must be strictly increasing from -90 to 90")
-    if not np.all(latitude_steps == np.float32(0.25)):
-        raise ValueError("latitude step must be exactly +0.25 degrees")
-    if not np.array_equal(latitude, TARGET_LAT):
-        raise ValueError("latitude coordinate does not match -90 to 90")
-    if not np.array_equal(longitude, TARGET_LON):
-        raise ValueError("longitude coordinate grid mismatch")
-
-
 def validate_output(
     path: Path,
     times: np.ndarray,
@@ -985,7 +964,7 @@ def validate_output(
             str(group.attrs["data_revision"]),
             radiation_seconds=radiation_seconds,
         ):
-            raise ValueError(f"root metadata does not match the {CONTENT_VERSION} schema")
+            raise ValueError("root metadata does not match the v2 schema")
         data = group["data"]
         if data.shape != (len(times), CHANNEL_COUNT, 721, 1440):
             raise ValueError("data shape mismatch")
@@ -997,7 +976,8 @@ def validate_output(
             raise ValueError("channel coordinate mismatch")
         if dict(group["channel"].attrs) != CHANNEL_ATTRIBUTES:
             raise ValueError("channel attributes mismatch")
-        validate_coordinate_grid(group["lat"][:], group["lon"][:])
+        if not np.array_equal(group["lat"][:], TARGET_LAT) or not np.array_equal(group["lon"][:], TARGET_LON):
+            raise ValueError("coordinate grid mismatch")
         if dict(group["lat"].attrs) != LAT_ATTRIBUTES or dict(group["lon"].attrs) != LON_ATTRIBUTES:
             raise ValueError("coordinate attributes mismatch")
         if dict(group["time"].attrs) != TIME_ATTRIBUTES:

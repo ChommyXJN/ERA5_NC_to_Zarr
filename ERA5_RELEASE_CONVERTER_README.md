@@ -220,7 +220,7 @@ pressure_level → level
 源纬度先排序，源经度归一化到 `[0, 360)` 并处理周期边界，再进行可分离线性插值。目标网格为：
 
 ```text
-lat: -90 → 90，721点，严格递增，步长 +0.25°
+lat: 90 → -90，721点，严格递减，步长 -0.25°
 lon: 0 → 359.75，1440点，步长 +0.25°
 ```
 
@@ -239,10 +239,10 @@ TP 直接保留阶段一的 `m → mm → clip_min → log1p` 结果。动态数
 
 ### 8. Zarr结构与压缩
 
-输出内容版本为 `v3`，单日名称示例：
+输出内容版本为 `v2`，单日名称示例：
 
 ```text
-era5.20250101.c116.p25.h6.v3.zarr
+era5.20250101.c116.p25.h6.v2.zarr
 ```
 
 主要节点：
@@ -272,7 +272,7 @@ auxiliary/surface_geopotential
 
 根 `zarr.json` 包含：
 
-- `dataset_id`、`schema_version`、`content_version=v3`、`data_revision`；
+- `dataset_id`、`schema_version`、`content_version=v2`、`data_revision`；
 - 经纬度覆盖范围；
 - 按 channel 顺序保存的116项 `channel_metadata`；
 - 每个通道的 variable、level、units、long_name 和完整 preprocess；
@@ -286,7 +286,7 @@ TP 的完整预处理描述为 `m → mm → clip_min(0) → log1p`，且不包�
 
 - 根节点、数组形状、dtype 和 chunks；
 - 116个通道名称及顺序；
-- 纬度严格 `-90 → 90` 且步长严格为 `+0.25°`；
+- 纬度严格 `90 → -90` 且步长严格为 `-0.25°`；
 - 经度、时间编码和坐标属性；
 - mean/std 的形状、有限性及正标准差；
 - 静态场形状和属性；
