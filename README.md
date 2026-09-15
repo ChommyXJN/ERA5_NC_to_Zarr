@@ -36,7 +36,7 @@
 | --- | --- |
 | `q` | `kg/kg × 1000 → g/kg` |
 | `ssr`、`ssrd`、`fdir`、`ttr` | `J/m² ÷ 21600 s → W/m²` |
-| `tp` | `log1p(max(tp, 0))`，不做 z-score |
+| `tp` | `m × 1000 → mm`，再执行 `log1p(max(tp_mm, 0))`，不做 z-score |
 | `ws10m` | 由 `u10m`、`v10m` 计算风速 |
 | `ws100m` | 由 `u100m`、`v100m` 计算风速 |
 | 其他动态变量 | 使用 `mean.nc` 和 `std.nc` 归一化 |

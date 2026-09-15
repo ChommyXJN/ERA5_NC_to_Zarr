@@ -9,7 +9,8 @@ Final processing rules
 ----------------------
 * Input files must already contain converted/preprocessed physical values.
 * C78 channels use externally supplied climatological mean/std.
-* TP is log1p(max(tp, 0)) only and is not z-score normalized.
+* TP is converted from m to mm, then log1p(max(tp_mm, 0)), and is not
+  z-score normalized.
 * The other 38 channels use supplied dataset-specific mean/std.  They can be
   computed explicitly with --compute-missing-additional-stats if absent.
 * No raw-field unit conversion or statistics-unit correction is performed here.
@@ -183,7 +184,14 @@ def preprocessing_metadata(
             "input_units": "J m-2", "output_units": "W m-2",
         }, zscore]
     if channel == "tp":
-        return [{"operation": "clip_min", "minimum": 0.0}, {"operation": "log1p"}]
+        return [
+            {
+                "operation": "multiply", "factor": 1000.0,
+                "input_units": "m", "output_units": "mm",
+            },
+            {"operation": "clip_min", "minimum": 0.0},
+            {"operation": "log1p"},
+        ]
     if channel == "ws10m":
         return [{"operation": "hypot", "inputs": ["u10m", "v10m"]}, zscore]
     if channel == "ws100m":

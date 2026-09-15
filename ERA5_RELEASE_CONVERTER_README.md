@@ -52,7 +52,7 @@ python .\2_convert_units_single_day.py `
 
 - `q`: `kg/kg * 1000 -> g/kg`
 - `ssr/ssrd/fdir/ttr`: `J/m² / 21600 s -> W/m²`
-- `tp`: `log1p(max(tp, 0))`，不做 z-score
+- `tp`: `m * 1000 -> mm`，再执行 `log1p(max(tp_mm, 0))`，不做 z-score
 - `ws10m/ws100m`: 分别由对应 U/V 分量通过 `hypot` 派生
 - 其他文件原值复制，文件名统一为 `YYYY.MM.DD.unit_converted.nc`
 

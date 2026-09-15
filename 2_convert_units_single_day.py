@@ -4,7 +4,7 @@
 Rules:
 * q at every pressure level: kg/kg * 1000 -> g/kg
 * ssr/ssrd/fdir/ttr: J/m2 / 21600 s -> W/m2
-* tp: log1p(max(tp, 0)), with no normalization
+* tp: m * 1000 -> mm, then log1p(max(tp_mm, 0)), with no normalization
 * ws10m: derived as hypot(u10m, v10m)
 * ws100m: derived as hypot(u100m, v100m)
 
@@ -27,6 +27,7 @@ import xarray as xr
 
 RADIATION = frozenset({"ssr", "ssrd", "fdir", "ttr"})
 RADIATION_SECONDS = 21600.0
+TP_METRES_TO_MILLIMETRES = 1000.0
 
 
 def parse_date(value: str) -> date:
@@ -91,13 +92,24 @@ def transformed_dataset(source: Path, logical_name: str) -> xr.Dataset:
             }
         )
     elif logical_name == "tp":
+        # ERA5 total precipitation is stored as metres of water equivalent.
+        # Convert to millimetres before applying the nonlinear transform.
+        if original_units.strip().lower() not in {
+            "m", "metre", "metres", "meter", "meters"
+        }:
+            raise ValueError(
+                f"{source}: expected raw tp units in metres, got {original_units!r}"
+            )
+        values = values * np.float32(TP_METRES_TO_MILLIMETRES)
         values = np.log1p(np.maximum(values, np.float32(0.0)))
         values.attrs = dict(variable.attrs)
         values.attrs.update(
             {
                 "units": "1",
                 "original_units": original_units,
-                "transformation": "log1p(max(tp, 0.0))",
+                "intermediate_units": "mm",
+                "unit_conversion": "value * 1000.0 (m to mm)",
+                "transformation": "log1p(max(tp * 1000.0, 0.0))",
                 "normalization_applied": "false",
             }
         )
@@ -109,7 +121,9 @@ def transformed_dataset(source: Path, logical_name: str) -> xr.Dataset:
     result.attrs.update(
         {
             "processing_stage": "unit_conversion_only",
-            "processing_rule": values.attrs.get("unit_conversion", values.attrs.get("transformation")),
+            "processing_rule": values.attrs.get(
+                "transformation", values.attrs.get("unit_conversion")
+            ),
         }
     )
     return result
