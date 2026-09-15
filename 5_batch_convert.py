@@ -100,13 +100,19 @@ def expected_daily_paths(
     ]
 
 
-def daily_tree_complete(root: Path, day: date, pipeline, converted: bool) -> bool:
+def daily_tree_complete(
+    root: Path,
+    day: date,
+    pipeline,
+    converted: bool,
+    include_static: bool = True,
+) -> bool:
     dynamic = (
         pipeline.NORMALIZED_INPUT_VARIABLES
         if converted
         else pipeline.DIRECT_VARIABLES
     )
-    required = tuple(dynamic) + tuple(pipeline.STATIC)
+    required = tuple(dynamic) + (tuple(pipeline.STATIC) if include_static else ())
     return all(
         path.is_file()
         for path in expected_daily_paths(root, day, required, pipeline, converted)
@@ -266,6 +272,7 @@ def run(args: argparse.Namespace) -> None:
         day_text = day.isoformat()
         daily_extracted = extracted_root / f"{day:%Y.%m.%d}"
         daily_source = source_for_day(source, day, args.input_mode)
+        include_static = index == 1
         needs_extraction = daily_source == source
         conversion_source = daily_extracted if needs_extraction else daily_source
         extract_marker = state_root / f"{day_text}.extract.json"
@@ -276,6 +283,7 @@ def run(args: argparse.Namespace) -> None:
             "source": str(daily_source),
             "output": str(daily_extracted),
             "input_mode": args.input_mode,
+            "include_static": str(include_static),
             "script_sha256": extract_digest,
         }
         convert_state = {
@@ -284,12 +292,19 @@ def run(args: argparse.Namespace) -> None:
             "source": str(conversion_source),
             "output": str(converted_root),
             "script_sha256": convert_digest,
+            "include_static": str(include_static),
         }
         print(f"[day {index}/{len(days)}] {day_text}", flush=True)
 
         convert_complete = (
             marker_matches(convert_marker, convert_state)
-            and daily_tree_complete(converted_root, day, pipeline, converted=True)
+            and daily_tree_complete(
+                converted_root,
+                day,
+                pipeline,
+                converted=True,
+                include_static=include_static,
+            )
         )
         if convert_complete and not args.force_days and not args.plan:
             print("[resume] converted daily files are complete", flush=True)
@@ -298,7 +313,11 @@ def run(args: argparse.Namespace) -> None:
                 extract_complete = (
                     marker_matches(extract_marker, extract_state)
                     and daily_tree_complete(
-                        daily_extracted, day, pipeline, converted=False
+                        daily_extracted,
+                        day,
+                        pipeline,
+                        converted=False,
+                        include_static=include_static,
                     )
                 )
                 if extract_complete and not args.force_days and not args.plan:
@@ -317,6 +336,8 @@ def run(args: argparse.Namespace) -> None:
                         str(daily_extracted),
                         "--overwrite",
                     ]
+                    if not include_static:
+                        command.append("--skip-static")
                     run_command(command, args.plan)
                     if not args.plan:
                         write_marker(extract_marker, extract_state)
@@ -333,6 +354,8 @@ def run(args: argparse.Namespace) -> None:
                 str(converted_root),
                 "--overwrite",
             ]
+            if not include_static:
+                command.append("--skip-static")
             run_command(command, args.plan)
             if not args.plan:
                 write_marker(convert_marker, convert_state)

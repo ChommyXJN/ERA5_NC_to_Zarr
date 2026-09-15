@@ -42,6 +42,12 @@ def source_file(
     input_mode: str = "auto",
 ) -> Path:
     directory = root / relative_dir
+    is_static = bool(relative_dir.parts) and relative_dir.parts[0] == "static"
+    if is_static and not directory.is_dir():
+        variable_root = root / Path(*relative_dir.parts[:-1])
+        candidates = sorted(variable_root.glob("*/*.nc"))
+        if len(candidates) == 1:
+            return candidates[0]
     if not directory.is_dir():
         raise FileNotFoundError(directory)
 
@@ -51,6 +57,9 @@ def source_file(
     candidates = daily if input_mode == "daily" else monthly
     if input_mode == "auto":
         candidates = daily or monthly
+    if is_static and not candidates:
+        variable_root = root / Path(*relative_dir.parts[:-1])
+        candidates = sorted(variable_root.glob("*/*.nc"))
     if len(candidates) != 1:
         raise FileNotFoundError(
             f"expected exactly one {input_mode} source file for {day.isoformat()} "
@@ -92,7 +101,13 @@ def output_encoding(dataset: xr.Dataset) -> dict[str, dict]:
     return encoding
 
 
-def extract_file(source: Path, destination: Path, day: date, overwrite: bool) -> None:
+def extract_file(
+    source: Path,
+    destination: Path,
+    day: date,
+    overwrite: bool,
+    static: bool = False,
+) -> None:
     if destination.exists() and not overwrite:
         raise FileExistsError(f"output exists; use --overwrite: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +127,8 @@ def extract_file(source: Path, destination: Path, day: date, overwrite: bool) ->
                 stop = np.datetime64((day + timedelta(days=1)).isoformat(), "ns")
                 values = np.asarray(dataset[time_name].values).astype("datetime64[ns]")
                 indices = np.flatnonzero((values >= start) & (values < stop))
+                if static and indices.size == 0 and values.size:
+                    indices = np.array([0], dtype=int)
                 if indices.size == 0:
                     raise ValueError(f"{source} contains no records for {day.isoformat()}")
                 expected = np.arange(indices[0], indices[-1] + 1)
@@ -153,6 +170,11 @@ def parse_args() -> argparse.Namespace:
         help=r"output root (default: E:\era5_YYYY.MM.DD_nc)",
     )
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--skip-static",
+        action="store_true",
+        help="omit static fields (batch mode stores them only once)",
+    )
     return parser.parse_args()
 
 
@@ -172,6 +194,10 @@ def run(args: argparse.Namespace) -> Path:
         for path in group.iterdir()
         if path.is_dir()
     )
+    if args.skip_static:
+        variable_dirs = [
+            path for path in variable_dirs if path.relative_to(source_root).parts[0] != "static"
+        ]
     if not variable_dirs:
         raise ValueError(f"no group/variable directories found under {source_root}")
 
@@ -189,7 +215,13 @@ def run(args: argparse.Namespace) -> Path:
         )
         destination = output_root / relative / str(day.year) / filename
         print(f"[{index:02d}/{len(variable_dirs):02d}] {relative}: {source.name}")
-        extract_file(source, destination, day, args.overwrite)
+        extract_file(
+            source,
+            destination,
+            day,
+            args.overwrite,
+            static=relative.parts[0] == "static",
+        )
 
     print(f"[DONE] wrote {len(variable_dirs)} daily NetCDF files to {output_root}")
     return output_root

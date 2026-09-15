@@ -42,6 +42,7 @@ class ExtractionInputModeTests(unittest.TestCase):
                     input_mode="monthly",
                     output=output_root,
                     overwrite=False,
+                    skip_static=False,
                 )
             )
             self.assertTrue(
@@ -77,6 +78,32 @@ class ExtractionInputModeTests(unittest.TestCase):
                             np.testing.assert_array_equal(
                                 actual_values, expected_values, err_msg=message
                             )
+
+    def test_static_monthly_fixture_is_reused_for_a_later_month(self) -> None:
+        relative = Path("static") / "lsm" / "2026"
+        source = EXTRACT.source_file(
+            DATA / "monthly", relative, date(2026, 7, 31), "monthly"
+        )
+        self.assertEqual(source.name, "lsm_20251.nc")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "2026.07.31.nc"
+            EXTRACT.extract_file(
+                source,
+                output,
+                date(2026, 7, 31),
+                overwrite=False,
+                static=True,
+            )
+            with xr.open_dataset(output, engine="netcdf4") as actual, xr.open_dataset(
+                source, engine="netcdf4"
+            ) as original:
+                np.testing.assert_allclose(
+                    actual["lsm"].isel(valid_time=0),
+                    original["lsm"].isel(valid_time=0),
+                    rtol=0,
+                    atol=0,
+                    equal_nan=True,
+                )
 
     def test_auto_prefers_exact_daily_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

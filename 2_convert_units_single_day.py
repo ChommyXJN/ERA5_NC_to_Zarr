@@ -201,6 +201,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", type=Path, help="daily NC tree from script 1")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--skip-static",
+        action="store_true",
+        help="omit static fields (batch mode stores them only once)",
+    )
     return parser.parse_args()
 
 
@@ -214,6 +219,12 @@ def run(args: argparse.Namespace) -> Path:
         raise ValueError("output must not be the source directory or one of its children")
 
     inputs = sorted(source_root.rglob("*.nc"))
+    if args.skip_static:
+        inputs = [
+            path
+            for path in inputs
+            if path.relative_to(source_root).parts[0] != "static"
+        ]
     if not inputs:
         raise ValueError(f"no NetCDF files found under {source_root}")
     converted_filename = f"{day:%Y.%m.%d}.unit_converted.nc"
