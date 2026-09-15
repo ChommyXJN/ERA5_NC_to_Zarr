@@ -26,6 +26,7 @@ venv/
 *.nc
 !/mean.nc
 !/std.nc
+!/tests/data/**/*.nc
 *.zarr/
 *.tmp
 *.log

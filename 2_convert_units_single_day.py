@@ -258,15 +258,15 @@ def run(args: argparse.Namespace) -> Path:
         ("u100m", "v100m", "ws100m", "100 metre"),
     )
     for u_logical, v_logical, ws_name, description in wind_speeds:
-        u_path = next(
-            (output_root / "sfc" / u_logical / str(day.year)).glob("*.nc"), None
+        u_path = (
+            output_root / "sfc" / u_logical / str(day.year) / converted_filename
         )
-        v_path = next(
-            (output_root / "sfc" / v_logical / str(day.year)).glob("*.nc"), None
+        v_path = (
+            output_root / "sfc" / v_logical / str(day.year) / converted_filename
         )
-        if u_path is None or v_path is None:
+        if not u_path.is_file() or not v_path.is_file():
             raise FileNotFoundError(
-                f"cannot derive {ws_name}: converted {u_logical}/{v_logical} files are missing"
+                f"cannot derive {ws_name}: converted {u_path} or {v_path} is missing"
             )
         ws_path = output_root / "sfc" / ws_name / str(day.year) / converted_filename
         if ws_path.exists() and not args.overwrite:

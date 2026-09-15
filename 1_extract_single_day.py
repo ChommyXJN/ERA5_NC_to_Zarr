@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract one day from every monthly ERA5 NetCDF file, preserving its tree layout.
+"""Extract one day from monthly or daily ERA5 NetCDF files, preserving tree layout.
 
 The source archive contains a few ZIP files whose names still end in ``.nc``;
 those files are detected and unpacked transparently.  Every output is a real
@@ -35,17 +35,32 @@ def default_output(day: date) -> Path:
     return Path(f"E:\\era5_{day:%Y.%m.%d}_nc")
 
 
-def monthly_file(root: Path, relative_dir: Path, day: date) -> Path:
+def source_file(
+    root: Path,
+    relative_dir: Path,
+    day: date,
+    input_mode: str = "auto",
+) -> Path:
     directory = root / relative_dir
     if not directory.is_dir():
         raise FileNotFoundError(directory)
-    candidates = sorted(directory.glob(f"*_{day.year}{day.month}.nc"))
+
+    daily_names = (f"{day:%Y.%m.%d}.nc", f"{day:%Y%m%d}.nc")
+    daily = [directory / name for name in daily_names if (directory / name).is_file()]
+    monthly = sorted(directory.glob(f"*_{day.year}{day.month}.nc"))
+    candidates = daily if input_mode == "daily" else monthly
+    if input_mode == "auto":
+        candidates = daily or monthly
     if len(candidates) != 1:
         raise FileNotFoundError(
-            f"expected exactly one monthly file for {day:%Y-%m} in {directory}, "
-            f"found {len(candidates)}"
+            f"expected exactly one {input_mode} source file for {day.isoformat()} "
+            f"in {directory}, found {len(candidates)}"
         )
     return candidates[0]
+
+
+# Retained for callers written before daily-input support was added.
+monthly_file = source_file
 
 
 @contextmanager
@@ -127,6 +142,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--date", type=parse_date, default=date(2025, 1, 1))
     parser.add_argument(
+        "--input-mode",
+        choices=("auto", "monthly", "daily"),
+        default="auto",
+        help="source filename layout (default: detect daily first, then monthly)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help=r"output root (default: E:\era5_YYYY.MM.DD_nc)",
@@ -160,7 +181,12 @@ def run(args: argparse.Namespace) -> Path:
     print(f"output: {output_root}")
     for index, variable_dir in enumerate(variable_dirs, start=1):
         relative = variable_dir.relative_to(source_root)
-        source = monthly_file(source_root, relative / str(day.year), day)
+        source = source_file(
+            source_root,
+            relative / str(day.year),
+            day,
+            args.input_mode,
+        )
         destination = output_root / relative / str(day.year) / filename
         print(f"[{index:02d}/{len(variable_dirs):02d}] {relative}: {source.name}")
         extract_file(source, destination, day, args.overwrite)

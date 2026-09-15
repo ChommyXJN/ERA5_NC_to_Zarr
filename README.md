@@ -1,52 +1,45 @@
 # ERA5 NC to Zarr
 
-将 ERA5 NetCDF（`.nc`）转换为适合分析和机器学习使用的 Zarr v3 数据集。
+将 ERA5 NetCDF（`.nc`）转换为适合分析和机器学习使用的 Zarr v3
+数据集。本项目固定输出116个动态通道，内容版本为 `v2`，纬度保持 ERA5
+原始的北到南顺序 `90° → -90°`。
 
-本项目完成：
-
-- ERA5 变量单位转换与数值预处理；
-- 派生 10 m 和 100 m 风速；
-- 使用 mean/std 进行归一化；
-- 重网格到全球 `0.25°` 网格；
-- 写入包含完整通道描述和 consolidated metadata 的 Zarr v3；
-- 在发布前校验时间、层级、通道、坐标、统计量和元数据。
-
-脚本2和脚本3的完整逐步说明见
-[ERA5_RELEASE_CONVERTER_README.md](ERA5_RELEASE_CONVERTER_README.md)。该文件是两阶段转换规则的详细技术文档；本 README 只保留项目入口和常用命令。
+> `Zarr v3` 指存储格式；文件名中的 `.v2.zarr` 和根属性
+> `content_version=v2` 指本项目的数据内容版本，两者含义不同。
 
 ## 处理流程
 
 ```text
-月度 ERA5 NetCDF（可选）
+多年/月度或逐日 ERA5 NetCDF
   │
-  ├─ 1_extract_single_day.py
+  ├─ 1_extract_single_day.py（按需抽取一天）
   ▼
-单日原始 NetCDF
+单日原始 NetCDF 目录树
   │
   ├─ 2_convert_units_single_day.py
   ▼
-单日 *.unit_converted.nc
+单日 *.unit_converted.nc 目录树
   │
   ├─ 3_normalize_and_write_zarr.py
   ▼
-归一化后的 Zarr v3 数据集
+归一化、重网格后的 Zarr v3
+  │
+  ├─ 4_validate_zarr.py
+  ▼
+结构、元数据、数值健康及可选原始 TP 复算校验
+
+5_batch_convert.py 可按日期范围自动串联脚本1至4。
 ```
 
-`1_extract_single_day.py` 是可选工具；如果已经有按日组织的原始 NetCDF，可以直接从脚本2开始。
+职责边界：
 
-## 关键处理规则
+- 脚本1只选择指定日期，保留原始变量、单位和目录结构。
+- 脚本2执行物理单位转换、TP预处理和派生风速，不归一化、不重网格。
+- 脚本3校验转换状态，进行重网格、归一化、Zarr写入和发布前校验。
+- 脚本4独立复核最终Zarr；提供原始TP路径时会重新计算抽样TP。
+- 脚本5负责批量调度、断点续跑、工作区清理和最终校验。
 
-| 变量 | 脚本2执行的处理 | 脚本3执行的处理 |
-| --- | --- | --- |
-| `q` | `kg/kg × 1000 → g/kg` | z-score |
-| `ssr/ssrd/fdir/ttr` | `J/m² ÷ 21600 s → W/m²` | z-score |
-| `tp` | `m × 1000 → mm`，再执行 `log1p(max(tp_mm, 0))` | 保持不变，不做 z-score |
-| `ws10m/ws100m` | 分别由对应 U/V 分量通过 `hypot` 派生 | z-score |
-| 其他动态变量 | 原值复制 | z-score |
-
-脚本3不会重复执行脚本2的单位转换。它会先检查关键输入单位，再进行重网格和归一化。
-
-## 环境安装
+## 环境和必需文件
 
 要求 Python 3.12 或更高版本：
 
@@ -56,18 +49,71 @@ py -3.12 -m venv .venv312
 python -m pip install -r .\ERA5_converter_requirements.txt
 ```
 
-## 快速开始
+正式流程文件：
 
-### 1. 抽取单日数据（可选）
+```text
+1_extract_single_day.py
+2_convert_units_single_day.py
+3_normalize_and_write_zarr.py
+4_validate_zarr.py
+5_batch_convert.py
+mean.nc
+std.nc
+ERA5_converter_requirements.txt
+README.md
+```
+
+`mean.nc/std.nc` 默认与脚本3放在同一目录，也可以通过 `--mean` 和
+`--std` 指定。辐射统计量必须使用 `/21600` 后的 `W/m²` 口径，脚本3不会再次
+缩放统计值。
+
+## 原始输入目录
+
+脚本1和脚本5支持三种布局。
+
+多年/月度库：
+
+```text
+source/group/variable/year/*_YYYYM.nc
+```
+
+共享逐日目录树：
+
+```text
+source/group/variable/year/YYYY.MM.DD.nc
+```
+
+按日期分区的逐日目录树（每个日期目录与单日输入完全相同）：
+
+```text
+source/YYYY.MM.DD/group/variable/year/YYYY.MM.DD.nc
+```
+
+相关命令使用：
+
+```text
+--input-mode monthly
+--input-mode daily
+--input-mode auto
+```
+
+`auto` 优先使用日期分区或精确的当天文件，否则选择对应月文件。项目还会自动
+识别实际为ZIP文件但扩展名仍为 `.nc` 的源文件。
+
+## 脚本1：抽取单日原始数据
 
 ```powershell
 python .\1_extract_single_day.py `
   --source "E:\era5_monthly_nc" `
+  --input-mode monthly `
   --date 2025-01-01 `
   --output "E:\era5_2025.01.01_nc"
 ```
 
-### 2. 单位转换与派生变量
+输出保持 `group/variable/year/file.nc` 布局，只保留当天的 `00、06、12、18 UTC`
+记录，不执行单位转换、重网格或精度降低。
+
+## 脚本2：单位转换与数值预处理
 
 ```powershell
 python .\2_convert_units_single_day.py `
@@ -77,7 +123,62 @@ python .\2_convert_units_single_day.py `
   --overwrite
 ```
 
-### 3. 只读检查 Zarr 输入
+输出文件统一命名为：
+
+```text
+YYYY.MM.DD.unit_converted.nc
+```
+
+### 比湿 q
+
+对所有气压层执行：
+
+```text
+kg/kg × 1000 → g/kg
+```
+
+### 六小时累计辐射
+
+对 `ssr`、`ssrd`、`fdir`、`ttr` 执行：
+
+```text
+J/m² ÷ 21600 s → W/m²
+```
+
+其中 `21600` 秒为6小时累计窗口。
+
+### 总降水 TP
+
+原始单位必须为米，严格按以下顺序处理：
+
+```text
+m × 1000 → mm
+clip_min(0)
+log1p
+```
+
+等价公式：
+
+```python
+tp = np.log1p(np.maximum(tp_m * 1000.0, 0.0))
+```
+
+TP输出单位为 `1`，记录原始单位 `m`、中间单位 `mm` 和完整转换描述，并明确
+不执行z-score。
+
+### 派生风速
+
+```text
+ws10m  = hypot(u10m, v10m)
+ws100m = hypot(u100m, v100m)
+```
+
+U/V坐标必须完全对齐。其他未列出的NetCDF原值复制。发生转换或派生的变量使用
+float32和NetCDF4 zlib level 4；目标先写临时文件，成功后原子替换。
+
+## 脚本3：归一化并写入Zarr
+
+推荐先进行只读检查：
 
 ```powershell
 python .\3_normalize_and_write_zarr.py `
@@ -87,7 +188,7 @@ python .\3_normalize_and_write_zarr.py `
   --dry-run
 ```
 
-### 4. 正式写入 Zarr
+检查通过后正式写入：
 
 ```powershell
 python .\3_normalize_and_write_zarr.py `
@@ -96,23 +197,188 @@ python .\3_normalize_and_write_zarr.py `
   --date 2025-01-01
 ```
 
-## 输出约定
+### 固定116通道
 
-默认单日输出名称：
+| 通道类别 | 数量 |
+| --- | ---: |
+| z、t、u、v、q 的13个标准气压层 | 65 |
+| 地表变量 | 13 |
+| z、t、u、v、q 的10 hPa层 | 5 |
+| w 的14个气压层 | 14 |
+| ws10m、ws100m | 2 |
+| 云量和辐射 | 8 |
+| 土壤变量 | 4 |
+| 海浪变量 | 5 |
+| 合计 | 116 |
+
+通道名称及顺序是固定产品协议，最终 `channel` 坐标必须完全一致。
+
+### 输入检查
+
+脚本3只接受脚本2生成的 `*.unit_converted.nc`，并检查：
+
+- 每个必需变量和日期是否存在；
+- 日期、时间和变量之间是否重复或缺失；
+- 完整日期是否具有 `00/06/12/18 UTC` 四个时次；
+- 多日数据是否保持连续6小时间隔；
+- z/t/u/v/q/w 的必需气压层是否齐全；
+- 所有变量的时间坐标是否一致；
+- q、辐射、TP和派生风速是否已经具有转换后的单位。
+
+读取时统一坐标名：
+
+```text
+valid_time     → time
+latitude       → lat
+longitude      → lon
+pressure_level → level
+```
+
+### mean/std和归一化
+
+- 78个参考通道必须由外部 `mean.nc/std.nc` 提供。
+- 38个附加通道可以由统计文件提供。
+- 缺少附加统计量时，可使用 `--compute-missing-additional-stats` 从输入期计算。
+- 统计计算忽略NaN，使用float64累加，最终保存为float32。
+- 所有标准差必须有限且大于0。
+- TP强制使用 `mean=0、std=1`，不做z-score。
+- 除TP外，动态通道执行 `(value - mean) / std`。
+
+### 重网格和纬度约定
+
+源纬度先排序，经度归一化到 `[0, 360)` 并处理周期边界，然后进行可分离线性
+插值。目标网格为：
+
+```text
+lat: 90 → -90，721点，严格递减，步长 -0.25°
+lon: 0 → 359.75，1440点，步长 +0.25°
+```
+
+当源网格完全一致时直接复用数值；动态变量和静态空间场采用相同约定。
+
+### Zarr结构、精度和压缩
+
+单日输出示例：
 
 ```text
 era5.20250101.c116.p25.h6.v2.zarr
 ```
 
-- 动态变量：116 个 channel；
-- 数据维度：`(time, channel, lat, lon)`；
-- 网格：`721 × 1440`，分辨率 `0.25°`；
-- 纬度：`90° → -90°`，严格递减，步长 `-0.25°`；
-- 经度：`0° → 359.75°`；
-- 时间间隔：6小时；
-- 动态数据：`float16`；
-- mean/std 和静态场：`float32`；
-- 格式：Zarr v3，包含116通道元数据和 inline consolidated metadata。
+主要节点：
+
+```text
+data                                  (time, channel, lat, lon) float16
+time                                  (time)
+channel                               (channel)
+lat                                   (lat)
+lon                                   (lon)
+auxiliary/mean                        (channel) float32
+auxiliary/std                         (channel) float32
+auxiliary/land_sea_mask               (lat, lon) float32
+auxiliary/slope_of_sub_gridscale_orography
+auxiliary/standard_deviation_of_orography
+auxiliary/surface_geopotential
+```
+
+`data` 默认chunk为 `(1, 116, 721, 1440)`，可通过 `--channel-chunk` 调整。
+压缩使用Blosc Zstandard level 5和bitshuffle。输入默认按4个时间步缓存，可通过
+`--time-block` 调整。
+
+根 `zarr.json` 包含：
+
+- `dataset_id`、`schema_version`、`content_version=v2`、`data_revision`；
+- 经纬度覆盖范围；
+- 按固定顺序保存的116项 `channel_metadata`；
+- 每个通道的variable、level、units、long_name和完整preprocess；
+- 12个子节点的inline consolidated metadata。
+
+所有内容先写入隐藏staging目录。数据、元数据和发布前校验全部成功后才原子发布；
+已有输出只有指定 `--overwrite` 才会替换。
+
+## 脚本4：独立校验最终Zarr
+
+```powershell
+python .\4_validate_zarr.py `
+  --zarr "E:\era5_release_output\era5.202501.c116.p25.h6.v2.zarr" `
+  --sample-count 3 `
+  --raw-tp-source "E:\era5_monthly_nc"
+```
+
+默认校验：
+
+- 时间唯一、连续、每6小时一次且覆盖完整UTC日；
+- consolidated和non-consolidated两种读取方式；
+- 根属性、116通道元数据和12个元数据节点；
+- Zarr目录名与根属性 `dataset_id` 一致；
+- data的shape、dtype和chunks；
+- 纬度严格 `90→-90`、步长 `-0.25°`；
+- 经度、时间、channel、mean/std和静态场；
+- 均匀抽取首、中、末等时间步读取 `z500/t2m/tp/swh`；
+- 抽样数据无无穷值，TP非负。
+
+提供 `--raw-tp-source` 时，还会从原始TP（单位必须为m）重新执行：
+
+```text
+m × 1000 → clip_min(0) → log1p → 重网格 → float16
+```
+
+并与Zarr中的抽样TP逐点精确比较。`--full-scan` 会读取每个时间步和全部116通道；
+其耗时和读取量接近完整扫描。没有原始TP路径时，只能证明结构、schema、可读性
+和基本数值健康，不能单独从最终Zarr重新证明TP转换公式。
+
+## 脚本5：批量处理完整日期范围
+
+先打印执行计划，不读写数据：
+
+```powershell
+python .\5_batch_convert.py `
+  --source "E:\era5_monthly_nc" `
+  --input-mode auto `
+  --work "E:\era5_batch_work" `
+  --output "E:\era5_release_output" `
+  --start 2025-01-01 `
+  --end 2025-01-31 `
+  --plan
+```
+
+确认后删除 `--plan`。处理过程为：
+
+```text
+每天：脚本1隔离当天数据 → 脚本2单位转换
+全部日期：脚本3生成一个完整Zarr → 脚本4独立校验
+```
+
+日期分区的daily输入已经是独立单日目录，会直接交给脚本2，不会复制。月度库或
+共享逐日树会先在工作区形成隔离日目录。
+
+工作目录：
+
+```text
+work/YYYYMMDD_YYYYMMDD/
+├─ extracted/              # 默认在每天转换成功后清理当天副本
+├─ unit_converted/
+│  └─ group/variable/year/YYYY.MM.DD.unit_converted.nc
+└─ state/
+   ├─ YYYY-MM-DD.extract.json
+   └─ YYYY-MM-DD.convert.json
+```
+
+断点续跑规则：
+
+- 每个阶段成功后才原子写入完成标记；
+- 同时检查标记内容、脚本SHA-256和当天全部必需文件；
+- 文件缺失、标记不匹配或脚本变化时自动重做对应日期；
+- `--force-days` 强制重做每日抽取和单位转换；
+- `--keep-extracted` 保留工作区中的原始日副本；
+- `--overwrite-zarr` 允许脚本3替换同名最终Zarr；
+- `--validate-only` 只准备日文件并运行脚本3的 `--dry-run`；
+- `--skip-raw-tp-check` 关闭最终原始TP复算；
+- `--skip-final-validation` 完全跳过脚本4，不推荐；
+- `--time-block` 和 `--channel-chunk` 会传递给脚本3。
+
+默认清理的仅是脚本1在工作区生成的隔离副本，绝不会删除 `--source` 中的用户
+原始数据。全部逐日单位转换文件必须保留到脚本3完成，因此仍需为
+`unit_converted` 预留足够空间。
 
 ## 测试
 
@@ -120,14 +386,44 @@ era5.20250101.c116.p25.h6.v2.zarr
 python -m unittest discover -s .\tests -v
 ```
 
-## 主要文件
+默认测试使用 `tests/data` 中从真实ERA5文件裁剪的小型NetCDF样本。fixture包含
+覆盖两天的全部40个月度源变量文件、一天4个时次的全部40个原始变量文件、
+42个单位转换文件、所有所需气压层，以及
+raw_truth/unit_converted/normalized三份完整116通道参考数据。只裁剪空间网格点，
+因此可以随代码提交并在CI中复现。测试内容包括：
+
+- 用4个数值即时创建临时TP NetCDF，检查 `m→mm→log1p` 和单位拒绝逻辑；
+- 月度、共享逐日和日期分区路径选择；
+- 日期范围、输出名称、完成标记和抽样索引；
+- TP元数据错误能否定位到具体通道；
+- 转换后目录能否被完整发现并映射到全部116通道；
+- 116通道单位转换前、转换后及归一化参考值的一致性；
+- 纬度保持 `90→-90` 以及数据与坐标对齐；
+- 内容版本保持 `v2`。
+
+fixture来源、裁剪范围和重新生成命令见 `tests/data/README.md`。测试过程中产生的
+额外文件位于系统临时目录，结束后自动删除。
+
+### 可选的完整数据集成测试
+
+完整单日NC、单位转换目录、多年月度库和单日Zarr体积较大，不复制进仓库。
+在包含用户E盘样本的本机上运行：
+
+```powershell
+$env:ERA5_RUN_FULL_INTEGRATION = "1"
+python -m unittest .\tests\test_full_data_integration.py -v
+Remove-Item Env:ERA5_RUN_FULL_INTEGRATION
+```
+
+默认路径为：
 
 ```text
-1_extract_single_day.py              # 可选：从月度数据抽取指定日期
-2_convert_units_single_day.py        # 单位转换、TP预处理、派生风速
-3_normalize_and_write_zarr.py        # 校验、统计量、重网格、归一化、Zarr发布
-mean.nc                              # 归一化均值
-std.nc                               # 归一化标准差
-ERA5_converter_requirements.txt     # Python依赖
-ERA5_RELEASE_CONVERTER_README.md    # 脚本2/3详细技术说明
+E:\era5_2025.01.01_nc
+E:\era5_2025.01.01_unit_converted_nc
+E:\era5_2025.01-2026.07_nc
+E:\era5_testsample\era5.20250101.c116.p25.h6.v2.zarr
 ```
+
+也可以通过 `ERA5_RAW_DAY`、`ERA5_CONVERTED_DAY`、`ERA5_RAW_ARCHIVE` 和
+`ERA5_TEST_ZARR` 环境变量覆盖。未设置 `ERA5_RUN_FULL_INTEGRATION=1` 时，这3项
+大型集成测试会正常显示为 skipped，不影响便携测试。
