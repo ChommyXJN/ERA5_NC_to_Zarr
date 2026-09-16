@@ -26,10 +26,12 @@ venv/
 *.nc
 !/mean.nc
 !/std.nc
-!/tests/data/**/*.nc
 *.zarr/
 *.tmp
 *.log
+
+# 本地集成测试路径（从 example 文件复制后填写）
+tests/integration_paths.json
 
 # 本地交付压缩包
 *.zip

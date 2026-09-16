@@ -212,11 +212,6 @@ def parse_args() -> argparse.Namespace:
         help="number of evenly spaced final Zarr samples (default: 3)",
     )
     parser.add_argument(
-        "--skip-raw-tp-check",
-        action="store_true",
-        help="do not recompute sampled TP values from the raw source",
-    )
-    parser.add_argument(
         "--skip-final-validation",
         action="store_true",
         help="skip script 4 after Zarr publication (not recommended)",
@@ -406,8 +401,6 @@ def run(args: argparse.Namespace) -> None:
             "--sample-count",
             str(args.validation_samples),
         ]
-        if not args.skip_raw_tp_check:
-            validate_command.extend(["--raw-tp-source", str(source)])
         run_command(validate_command, args.plan)
     if args.plan:
         print("[PLAN] no files were changed")

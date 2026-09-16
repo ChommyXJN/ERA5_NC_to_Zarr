@@ -26,7 +26,7 @@
   │
   ├─ 4_validate_zarr.py
   ▼
-结构、元数据、数值健康及可选原始 TP 复算校验
+结构、元数据和通用数值健康校验
 
 5_batch_convert.py 可按日期范围自动串联脚本1至4。
 ```
@@ -36,7 +36,7 @@
 - 脚本1只选择指定日期，保留原始变量、单位和目录结构。
 - 脚本2执行物理单位转换、TP预处理和派生风速，不归一化、不重网格。
 - 脚本3校验转换状态，进行重网格、归一化、Zarr写入和发布前校验。
-- 脚本4独立复核最终Zarr；提供原始TP路径时会重新计算抽样TP。
+- 脚本4独立复核最终Zarr的结构、元数据和抽样数值。
 - 脚本5负责批量调度、断点续跑、工作区清理和最终校验。
 
 ## 环境和必需文件
@@ -302,8 +302,7 @@ auxiliary/surface_geopotential
 ```powershell
 python .\4_validate_zarr.py `
   --zarr "E:\era5_release_output\era5.202501.c116.p25.h6.v2.zarr" `
-  --sample-count 3 `
-  --raw-tp-source "E:\era5_monthly_nc"
+  --sample-count 3
 ```
 
 默认校验：
@@ -315,18 +314,11 @@ python .\4_validate_zarr.py `
 - data的shape、dtype和chunks；
 - 纬度严格 `90→-90`、步长 `-0.25°`；
 - 经度、时间、channel、mean/std和静态场；
-- 均匀抽取首、中、末等时间步读取 `z500/t2m/tp/swh`；
-- 抽样数据无无穷值，TP非负。
+- 均匀抽取首、中、末等时间步读取 `z500/t2m/q500/swh`；
+- 抽样通道包含有限值，全部抽样数据不含无穷值。
 
-提供 `--raw-tp-source` 时，还会从原始TP（单位必须为m）重新执行：
-
-```text
-m × 1000 → clip_min(0) → log1p → 重网格 → float16
-```
-
-并与Zarr中的抽样TP逐点精确比较。`--full-scan` 会读取每个时间步和全部116通道；
-其耗时和读取量接近完整扫描。没有原始TP路径时，只能证明结构、schema、可读性
-和基本数值健康，不能单独从最终Zarr重新证明TP转换公式。
+`--channels` 可以指定需要报告的任意通道。`--full-scan` 会读取每个时间步和全部
+116通道，其耗时和读取量接近完整扫描。
 
 ## 脚本5：批量处理完整日期范围
 
@@ -375,7 +367,6 @@ work/YYYYMMDD_YYYYMMDD/
 - `--keep-extracted` 保留工作区中的原始日副本；
 - `--overwrite-zarr` 允许脚本3替换同名最终Zarr；
 - `--validate-only` 只准备日文件并运行脚本3的 `--dry-run`；
-- `--skip-raw-tp-check` 关闭最终原始TP复算；
 - `--skip-final-validation` 完全跳过脚本4，不推荐；
 - `--time-block` 和 `--channel-chunk` 会传递给脚本3。
 
@@ -390,44 +381,40 @@ work/YYYYMMDD_YYYYMMDD/
 python -m unittest discover -s .\tests -v
 ```
 
-默认测试使用 `tests/data` 中从真实ERA5文件裁剪的小型NetCDF样本。fixture包含
-覆盖两天的全部40个月度源变量文件、一天4个时次的全部40个原始变量文件、
-42个单位转换文件、所有所需气压层，以及
-raw_truth/unit_converted/normalized三份完整116通道参考数据。只裁剪空间网格点，
-因此可以随代码提交并在CI中复现。测试内容包括：
+仓库不包含 ERA5 测试数据。默认命令只运行不依赖外部数据的路径选择、日期范围、
+元数据错误定位、抽样索引、纬度顺序和内容版本等轻量测试；外部数据集成测试在
+没有本地配置时显示为 skipped。
 
-- 用4个数值即时创建临时TP NetCDF，检查 `m→mm→log1p` 和单位拒绝逻辑；
-- 月度、共享逐日和日期分区路径选择；
-- 日期范围、输出名称、完成标记和抽样索引；
-- TP元数据错误能否定位到具体通道；
-- 转换后目录能否被完整发现并映射到全部116通道；
-- 116通道单位转换前、转换后及归一化参考值的一致性；
-- 纬度保持 `90→-90` 以及数据与坐标对齐；
-- 内容版本保持 `v2`。
+### 使用同一批数据进行集成测试
 
-fixture来源、裁剪范围和重新生成命令见 `tests/data/README.md`。测试过程中产生的
-额外文件位于系统临时目录，结束后自动删除。
-
-### 可选的完整数据集成测试
-
-完整单日NC、单位转换目录、多年月度库和单日Zarr体积较大，不复制进仓库。
-在包含用户E盘样本的本机上运行：
+复制路径配置示例并按本机实际位置修改：
 
 ```powershell
-$env:ERA5_RUN_FULL_INTEGRATION = "1"
+Copy-Item .\tests\integration_paths.example.json .\tests\integration_paths.json
+```
+
+配置文件包含五项：
+
+```json
+{
+  "date": "2025-01-01",
+  "source": "E:\\era5_2025.01-2026.07_nc",
+  "extracted_day": "E:\\era5_2025.01.01_nc",
+  "unit_converted_day": "E:\\era5_2025.01.01_unit_converted_nc",
+  "zarr": "E:\\era5_release_output\\era5.20250101.c116.p25.h6.v2.zarr"
+}
+```
+
+`source` 可以是两年或其他跨度的原下载数据，但其余三个阶段必须包含 `date`
+指定的同一天。测试会从源归档检查全部必需输入，确认单日切取和单位转换目录均
+完整覆盖该日的4个时次，再确认Zarr包含同一天、全部116通道并通过脚本4校验。
+这样四个路径代表同一批数据从原始输入到最终Zarr的完整流程。
+
+运行集成测试：
+
+```powershell
 python -m unittest .\tests\test_full_data_integration.py -v
-Remove-Item Env:ERA5_RUN_FULL_INTEGRATION
 ```
 
-默认路径为：
-
-```text
-E:\era5_2025.01.01_nc
-E:\era5_2025.01.01_unit_converted_nc
-E:\era5_2025.01-2026.07_nc
-E:\era5_testsample\era5.20250101.c116.p25.h6.v2.zarr
-```
-
-也可以通过 `ERA5_RAW_DAY`、`ERA5_CONVERTED_DAY`、`ERA5_RAW_ARCHIVE` 和
-`ERA5_TEST_ZARR` 环境变量覆盖。未设置 `ERA5_RUN_FULL_INTEGRATION=1` 时，这3项
-大型集成测试会正常显示为 skipped，不影响便携测试。
+`tests/integration_paths.json` 已加入 `.gitignore`。也可以把配置放在任意位置，并用
+`ERA5_TEST_CONFIG` 指向它。

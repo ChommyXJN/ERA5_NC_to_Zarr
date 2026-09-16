@@ -1,0 +1,7 @@
+{
+  "date": "2025-01-01",
+  "source": "E:\\era5_2025.01-2026.07_nc",
+  "extracted_day": "E:\\era5_2025.01.01_nc",
+  "unit_converted_day": "E:\\era5_2025.01.01_unit_converted_nc",
+  "zarr": "E:\\era5_release_output\\era5.20250101.c116.p25.h6.v2.zarr"
+}

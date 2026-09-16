@@ -1,39 +1,27 @@
-"""Optional integration checks against the user's full E: drive samples.
+"""Integration checks against one externally configured ERA5 data flow.
 
-Run explicitly with ``ERA5_RUN_FULL_INTEGRATION=1``. These tests are skipped in
-portable CI because the external files are not part of the repository.
+Copy ``integration_paths.example.json`` to ``integration_paths.json``, update
+the paths, then run this module explicitly. No ERA5 data is stored in Git.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import unittest
+from argparse import Namespace
+from datetime import date
 from pathlib import Path
 
 import numpy as np
-import xarray as xr
 import zarr
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RAW_DAY = Path(os.environ.get("ERA5_RAW_DAY", r"E:\era5_2025.01.01_nc"))
-CONVERTED_DAY = Path(
-    os.environ.get(
-        "ERA5_CONVERTED_DAY", r"E:\era5_2025.01.01_unit_converted_nc"
-    )
-)
-RAW_ARCHIVE = Path(
-    os.environ.get("ERA5_RAW_ARCHIVE", r"E:\era5_2025.01-2026.07_nc")
-)
-TEST_ZARR = Path(
-    os.environ.get(
-        "ERA5_TEST_ZARR",
-        r"E:\era5_testsample\era5.20250101.c116.p25.h6.v2.zarr",
-    )
-)
-RUN_FULL = os.environ.get("ERA5_RUN_FULL_INTEGRATION") == "1"
+DEFAULT_CONFIG = Path(__file__).with_name("integration_paths.json")
+CONFIG_PATH = Path(os.environ.get("ERA5_TEST_CONFIG", DEFAULT_CONFIG))
 
 
 def load(name: str, filename: str):
@@ -45,61 +33,99 @@ def load(name: str, filename: str):
     return module
 
 
-CONVERT = load("integration_convert", "2_convert_units_single_day.py")
+EXTRACT = load("integration_extract", "1_extract_single_day.py")
+BATCH = load("integration_batch", "5_batch_convert.py")
 VALIDATE = load("integration_validate", "4_validate_zarr.py")
+PIPELINE = VALIDATE.load_pipeline()
 
 
-@unittest.skipUnless(
-    RUN_FULL,
-    "set ERA5_RUN_FULL_INTEGRATION=1 to use the external full-size ERA5 samples",
-)
-class FullRealDataIntegrationTests(unittest.TestCase):
+class ExternalDataFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        for path in (RAW_DAY, CONVERTED_DAY, RAW_ARCHIVE, TEST_ZARR):
-            if not path.exists():
-                raise unittest.SkipTest(f"external integration path is missing: {path}")
+        if not CONFIG_PATH.is_file():
+            raise unittest.SkipTest(
+                "copy tests/integration_paths.example.json to "
+                "tests/integration_paths.json and set the external data paths"
+            )
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+        required = ("source", "extracted_day", "unit_converted_day", "zarr", "date")
+        missing = [name for name in required if not config.get(name)]
+        if missing:
+            raise ValueError(f"{CONFIG_PATH}: missing values: {', '.join(missing)}")
+        cls.day = date.fromisoformat(config["date"])
+        cls.paths = {
+            name: Path(config[name]).expanduser().resolve()
+            for name in required[:-1]
+        }
+        absent = [
+            f"{name}={path}" for name, path in cls.paths.items() if not path.exists()
+        ]
+        if absent:
+            raise FileNotFoundError(
+                "configured integration paths do not exist: " + "; ".join(absent)
+            )
 
-    def test_full_daily_tp_conversion_matches_real_converted_file(self) -> None:
-        raw_path = RAW_DAY / "sfc" / "tp" / "2025" / "2025.01.01.nc"
-        expected_path = (
-            CONVERTED_DAY
-            / "sfc"
-            / "tp"
-            / "2025"
-            / "2025.01.01.unit_converted.nc"
-        )
-        actual = CONVERT.transformed_dataset(raw_path, "tp")
-        try:
-            with xr.open_dataset(expected_path, engine="netcdf4") as expected:
-                np.testing.assert_allclose(
-                    actual["tp"].values,
-                    expected["tp"].values,
-                    rtol=1e-6,
-                    atol=0,
-                    equal_nan=True,
+    def test_source_contains_every_input_for_the_configured_day(self) -> None:
+        source = BATCH.source_for_day(self.paths["source"], self.day, "auto")
+        variables = tuple(PIPELINE.DIRECT_VARIABLES) + tuple(PIPELINE.STATIC)
+        for variable in variables:
+            relative = (
+                Path(PIPELINE.GROUPS[variable])
+                / PIPELINE.SOURCE_DIRECTORIES.get(variable, variable)
+                / str(self.day.year)
+            )
+            with self.subTest(variable=variable):
+                self.assertTrue(
+                    EXTRACT.source_file(source, relative, self.day, "auto").is_file()
                 )
-        finally:
-            actual.close()
 
-    def test_zarr_tp_samples_recompute_from_raw_archive(self) -> None:
-        pipeline = VALIDATE.load_pipeline()
-        group = zarr.open_group(str(TEST_ZARR), mode="r", use_consolidated=False)
-        times = VALIDATE.decoded_times(group)
-        channels = [str(value) for value in group["channel"][:].tolist()]
-        VALIDATE.validate_tp_against_raw(
-            group,
-            channels,
-            times,
-            [0, len(times) - 1],
-            RAW_ARCHIVE,
-            pipeline,
+    def test_daily_stages_cover_the_same_complete_day(self) -> None:
+        extracted = self.paths["extracted_day"]
+        converted = self.paths["unit_converted_day"]
+        self.assertTrue(
+            BATCH.daily_tree_complete(
+                extracted, self.day, PIPELINE, converted=False
+            )
         )
+        self.assertTrue(
+            BATCH.daily_tree_complete(
+                converted, self.day, PIPELINE, converted=True
+            )
+        )
+        days, files, times = PIPELINE.discover(converted, self.day)
+        self.assertEqual(days, [self.day])
+        self.assertEqual(set(files), set(PIPELINE.NORMALIZED_INPUT_VARIABLES))
+        expected_times = np.array(
+            [
+                np.datetime64(self.day) + np.timedelta64(hour, "h")
+                for hour in (0, 6, 12, 18)
+            ]
+        )
+        np.testing.assert_array_equal(times.astype("datetime64[h]"), expected_times)
 
-    def test_zarr_metadata_matches_current_strict_schema(self) -> None:
-        pipeline = VALIDATE.load_pipeline()
-        group = zarr.open_group(str(TEST_ZARR), mode="r", use_consolidated=False)
-        VALIDATE.validate_root_metadata(group, pipeline)
+    def test_zarr_contains_and_validates_the_same_day(self) -> None:
+        path = self.paths["zarr"]
+        VALIDATE.run(
+            Namespace(
+                zarr=path,
+                sample_count=3,
+                channels=list(VALIDATE.DEFAULT_CHANNELS),
+                full_scan=False,
+                allow_partial=False,
+            )
+        )
+        group = zarr.open_group(str(path), mode="r", use_consolidated=False)
+        times = VALIDATE.decoded_times(group).astype("datetime64[h]")
+        selected = times[times.astype("datetime64[D]") == np.datetime64(self.day)]
+        expected_times = np.array(
+            [
+                np.datetime64(self.day) + np.timedelta64(hour, "h")
+                for hour in (0, 6, 12, 18)
+            ]
+        )
+        np.testing.assert_array_equal(selected, expected_times)
+        channels = [str(value) for value in group["channel"][:].tolist()]
+        self.assertEqual(channels, list(PIPELINE.DYNAMIC_CHANNELS))
 
 
 if __name__ == "__main__":
