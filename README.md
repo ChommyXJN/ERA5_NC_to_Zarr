@@ -245,6 +245,8 @@ pressure_level → level
 - 所有标准差必须有限且大于0。
 - TP强制使用 `mean=0、std=1`，不做z-score。
 - 除TP外，动态通道执行 `(value - mean) / std`。
+- 反归一化仅执行 `value * std + mean`；TP原样返回，不执行 `expm1`，所有通道
+  都不在反归一化阶段进行单位反转换。
 
 ### 重网格和纬度约定
 
@@ -270,20 +272,20 @@ era5.20250101.c116.p25.h6.v3.zarr
 
 ```text
 data                                  (time, channel, lat, lon) float16
-time                                  (time)
-channel                               (channel)
-lat                                   (lat)
-lon                                   (lon)
+time                                  (time) datetime64[ns]
+channel                               (channel) string
+lat                                   (lat) float32
+lon                                   (lon) float32
 mean                                  (channel) float32
 std                                   (channel) float32
-mask/mask_channel                     (mask_channel) string
-mask/land_mask                        (lat, lon) float32
-mask/sea_mask                         (lat, lon) float32
+mask                                  (mask_channel, lat, lon) uint8
+mask_channel                          (mask_channel) string
 ```
 
-`land_mask` 保留ERA5 `lsm` 的 `[0, 1]` 陆地比例并裁剪浮点越界，`sea_mask`
-严格由 `1 - land_mask` 派生。两者是独立数组，`mask/mask_channel` 是mask名称的
-有序注册表。其他静态场、const和纬度权重暂不发布到最终Zarr。
+`mask[0]` 为 `land_mask = (lsm > 0.5)`，`mask[1]` 为
+`sea_mask = 1 - land_mask`。二者均为 `uint8` 二值数组；`mask_channel`
+按顺序保存 `land_mask`、`sea_mask`，以后增加掩码时沿该维扩展。其他静态场、
+const和纬度权重暂不发布到最终Zarr。
 
 `data` 默认chunk为 `(1, 116, 721, 1440)`，可通过 `--channel-chunk` 调整。
 压缩使用Blosc Zstandard level 5和bitshuffle。输入默认按4个时间步缓存，可通过
@@ -293,9 +295,10 @@ mask/sea_mask                         (lat, lon) float32
 
 - `dataset_id`、`schema_version=2.0`、`content_version=v3`、`data_revision`；
 - 经纬度覆盖范围；
-- 按固定顺序保存的116项 `channel_metadata`；
-- 每个通道的variable、level、units、long_name和完整preprocess；
-- 11个子节点的inline consolidated metadata。
+- `/channel` 属性中的 `channel_info` 保存116项通道语义，主数据顺序仅由
+  `/channel[:]` 决定；两者的键集合必须完全一致；
+- 每个通道保存source、units、level类型、variable类型和完整preprocessing；
+- 9个根数组的inline consolidated metadata。
 
 所有内容先写入隐藏staging目录。数据、元数据和发布前校验全部成功后才原子发布；
 已有输出只有指定 `--overwrite` 才会替换。

@@ -15,7 +15,6 @@ import zarr
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PIPELINE_PATH = SCRIPT_DIR / "3_normalize_and_write_zarr.py"
-TIME_ORIGIN = np.datetime64("1979-01-01T00", "h")
 DEFAULT_CHANNELS = ("z500", "t2m", "q500", "swh")
 
 
@@ -30,11 +29,13 @@ def load_pipeline():
 
 
 def decoded_times(group: zarr.Group) -> np.ndarray:
-    units = str(group["time"].attrs.get("units", ""))
-    if units != "hours since 1979-01-01":
-        raise ValueError(f"unexpected time units: {units!r}")
-    offsets = np.asarray(group["time"][:], dtype="i8")
-    return TIME_ORIGIN + offsets.astype("timedelta64[h]")
+    values = np.asarray(group["time"][:])
+    if not np.issubdtype(values.dtype, np.datetime64):
+        raise ValueError(f"time dtype must be datetime64, got {values.dtype}")
+    values = values.astype("datetime64[ns]")
+    if np.isnat(values).any():
+        raise ValueError("time contains NaT")
+    return values
 
 
 def sample_indices(total: int, count: int) -> list[int]:
@@ -68,19 +69,46 @@ def validate_root_metadata(group: zarr.Group, pipeline) -> None:
         details.append("missing=" + ",".join(missing))
     if extra:
         details.append("unexpected=" + ",".join(extra))
-    if "channel_metadata" in differing:
-        actual_channels = actual.get("channel_metadata", {})
-        expected_channels = expected["channel_metadata"]
-        changed = [
-            name
-            for name in pipeline.DYNAMIC_CHANNELS
-            if actual_channels.get(name) != expected_channels.get(name)
-        ]
-        details.append("channel_metadata differs for=" + ",".join(changed))
-        differing.remove("channel_metadata")
     if differing:
         details.append("different=" + ",".join(differing))
     raise ValueError("root metadata does not match the v3 schema: " + "; ".join(details))
+
+
+def validate_channel_metadata(group: zarr.Group, pipeline) -> None:
+    """Validate /channel attributes without relying on JSON object order."""
+
+    channel = group["channel"]
+    labels = [str(value) for value in channel[:].tolist()]
+    attributes = dict(channel.attrs)
+    info = attributes.get("channel_info")
+    if not isinstance(info, dict):
+        raise ValueError("/channel channel_info must be an object")
+    missing = sorted(set(labels) - set(info))
+    extra = sorted(set(info) - set(labels))
+    if missing or extra:
+        details = []
+        if missing:
+            details.append("missing=" + ",".join(missing))
+        if extra:
+            details.append("unexpected=" + ",".join(extra))
+        raise ValueError("channel_info keys differ from /channel: " + "; ".join(details))
+    expected = pipeline.channel_attributes(
+        radiation_seconds=pipeline.DEFAULT_RADIATION_SECONDS
+    )
+    changed = [
+        name
+        for name in labels
+        if info.get(name) != expected["channel_info"].get(name)
+    ]
+    non_info_actual = {key: value for key, value in attributes.items() if key != "channel_info"}
+    non_info_expected = {key: value for key, value in expected.items() if key != "channel_info"}
+    if changed or non_info_actual != non_info_expected:
+        details = []
+        if changed:
+            details.append("channel_info differs for=" + ",".join(changed))
+        if non_info_actual != non_info_expected:
+            details.append("/channel scalar attributes differ")
+        raise ValueError("/channel metadata does not match the v3 schema: " + "; ".join(details))
 
 
 def inspect_values(
@@ -182,6 +210,7 @@ def run(args: argparse.Namespace) -> None:
     times = decoded_times(group)
     pipeline.validate_time_coverage(times, args.allow_partial)
     validate_root_metadata(group, pipeline)
+    validate_channel_metadata(group, pipeline)
     channel_chunk = int(group["data"].chunks[1])
     pipeline.validate_output(
         path,
@@ -208,7 +237,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"time: {times[0]} .. {times[-1]} ({len(times)} steps)")
     print(f"shape: {consolidated['data'].shape}")
     print("latitude: 90 .. -90, strictly decreasing by -0.25 degrees")
-    print("masks: land_mask and sea_mask are finite complementary fractions")
+    print("masks: uint8 land_mask and sea_mask are binary and complementary")
     print("metadata: non-consolidated and consolidated reads passed")
 
 

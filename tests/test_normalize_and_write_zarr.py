@@ -46,22 +46,66 @@ class LatitudeConventionTests(unittest.TestCase):
         self.assertEqual(MODULE.CONTENT_VERSION, "v3")
         self.assertEqual(MODULE.SCHEMA_VERSION, "2.0")
 
-    def test_fractional_masks_are_clipped_and_complementary(self) -> None:
+    def test_masks_are_thresholded_binary_and_complementary(self) -> None:
         source = np.array([[-0.1, 0.25, 0.5, 0.75, 1.1]], dtype="f4")
         land, sea = MODULE.derive_land_sea_masks(source)
         np.testing.assert_array_equal(
-            land, np.array([[0.0, 0.25, 0.5, 0.75, 1.0]], dtype="f4")
+            land, np.array([[0, 0, 0, 1, 1]], dtype="u1")
         )
-        np.testing.assert_array_equal(sea, np.float32(1.0) - land)
+        self.assertEqual(land.dtype, np.dtype("u1"))
+        np.testing.assert_array_equal(sea, np.uint8(1) - land)
         np.testing.assert_array_equal(land + sea, np.ones_like(land))
 
-    def test_v3_paths_place_statistics_at_root_and_masks_in_group(self) -> None:
+    def test_v3_paths_place_statistics_and_single_mask_array_at_root(self) -> None:
         self.assertIn("mean", MODULE.EXPECTED_CHILDREN)
         self.assertIn("std", MODULE.EXPECTED_CHILDREN)
-        self.assertIn("mask/mask_channel", MODULE.EXPECTED_CHILDREN)
-        self.assertIn("mask/land_mask", MODULE.EXPECTED_CHILDREN)
-        self.assertIn("mask/sea_mask", MODULE.EXPECTED_CHILDREN)
+        self.assertIn("mask", MODULE.EXPECTED_CHILDREN)
+        self.assertIn("mask_channel", MODULE.EXPECTED_CHILDREN)
         self.assertFalse(any(path.startswith("auxiliary") for path in MODULE.EXPECTED_CHILDREN))
+
+    def test_channel_info_is_complete_and_key_aligned(self) -> None:
+        attributes = MODULE.channel_attributes()
+        info = attributes["channel_info"]
+        self.assertEqual(set(MODULE.DYNAMIC_CHANNELS), set(info))
+        required = {
+            "long_name", "source_name", "source_units", "units", "level_type",
+            "variable_type", "preprocessing",
+        }
+        for channel in MODULE.DYNAMIC_CHANNELS:
+            self.assertTrue(required.issubset(info[channel]), channel)
+        self.assertEqual(info["q500"]["level"], 500)
+        self.assertEqual(info["q500"]["level_units"], "hPa")
+        self.assertNotIn("level", info["msl"])
+
+    def test_data_and_time_metadata_follow_schema(self) -> None:
+        self.assertEqual(MODULE.DATA_ATTRIBUTES["data_representation"], "normalized")
+        self.assertEqual(MODULE.DATA_ATTRIBUTES["normalization_method"], "channel_dependent")
+        self.assertIn("_FillValue", MODULE.DATA_ATTRIBUTES)
+        self.assertEqual(MODULE.TIME_ATTRIBUTES["timezone"], "UTC")
+        self.assertNotIn("channel_count", MODULE.root_attributes("id", "revision"))
+
+    def test_denormalization_only_reverses_channel_zscore(self) -> None:
+        values = np.array([0.0, 1.0], dtype="f4")
+        np.testing.assert_array_equal(
+            MODULE.denormalize_values(values, "t2m", np.float32(10), np.float32(2)),
+            np.array([10.0, 12.0], dtype="f4"),
+        )
+        np.testing.assert_array_equal(
+            MODULE.denormalize_values(values, "tp", np.float32(0), np.float32(1)),
+            values,
+        )
+
+    def test_complete_day_validation_accepts_nanosecond_times(self) -> None:
+        times = np.array(
+            [
+                "2025-01-01T00:00:00.000000000",
+                "2025-01-01T06:00:00.000000000",
+                "2025-01-01T12:00:00.000000000",
+                "2025-01-01T18:00:00.000000000",
+            ],
+            dtype="datetime64[ns]",
+        )
+        MODULE.validate_time_coverage(times, allow_partial=False)
 
 if __name__ == "__main__":
     unittest.main()

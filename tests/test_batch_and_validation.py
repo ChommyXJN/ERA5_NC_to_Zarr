@@ -7,6 +7,8 @@ import unittest
 from datetime import date
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -129,23 +131,26 @@ class ValidationSamplingTests(unittest.TestCase):
 
     def test_metadata_error_identifies_changed_channel(self) -> None:
         pipeline = VALIDATE.load_pipeline()
-        attributes = pipeline.root_attributes(
-            "era5.20250101.c116.p25.h6.v3",
-            "20260915",
-            radiation_seconds=pipeline.DEFAULT_RADIATION_SECONDS,
+        attributes = pipeline.channel_attributes()
+        attributes["channel_info"] = dict(attributes["channel_info"])
+        attributes["channel_info"]["t2m"] = dict(
+            attributes["channel_info"]["t2m"], units="invalid"
         )
-        attributes["channel_metadata"] = dict(attributes["channel_metadata"])
-        attributes["channel_metadata"]["t2m"] = {
-            "variable": "t2m",
-            "units": "invalid",
-            "preprocess": [],
-        }
 
-        class FakeGroup:
+        class FakeChannel:
             attrs = attributes
 
+            def __getitem__(self, key):
+                return np.asarray(pipeline.DYNAMIC_CHANNELS, dtype=str)[key]
+
+        class FakeGroup:
+            def __getitem__(self, key):
+                if key != "channel":
+                    raise KeyError(key)
+                return FakeChannel()
+
         with self.assertRaisesRegex(ValueError, "differs for=t2m"):
-            VALIDATE.validate_root_metadata(FakeGroup(), pipeline)
+            VALIDATE.validate_channel_metadata(FakeGroup(), pipeline)
 
 
 if __name__ == "__main__":

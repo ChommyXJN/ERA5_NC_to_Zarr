@@ -53,6 +53,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 SCHEMA_VERSION = "2.0"
 CONTENT_VERSION = "v3"
 CHANNEL_COUNT = 116
+CHANNEL_INFO_SCHEMA_VERSION = "1.0"
 DEFAULT_RADIATION_SECONDS = 21600.0
 
 TARGET_LAT = np.linspace(90.0, -90.0, 721, dtype=np.float32)
@@ -154,6 +155,20 @@ VARIABLE_METADATA = {
     "mwp": ("s", "Mean wave period"),
     "swh": ("m", "Significant height of combined wind waves and swell"),
 }
+SOURCE_UNITS = {
+    **{name: units for name, (units, _) in VARIABLE_METADATA.items()},
+    "q": "kg kg-1",
+    "ssr": "J m-2", "ssrd": "J m-2", "fdir": "J m-2", "ttr": "J m-2",
+    "tp": "m",
+}
+SOURCE_NAMES: dict[str, str | list[str]] = {
+    name: name for name in VARIABLE_METADATA
+}
+SOURCE_NAMES.update({
+    "ws10m": ["u10m", "v10m"],
+    "ws100m": ["u100m", "v100m"],
+    "swvl1": "vsw1", "swvl2": "vsw2", "stl1": "sot1", "stl2": "sot2",
+})
 
 
 def split_channel(channel: str) -> tuple[str, int | None]:
@@ -199,7 +214,32 @@ def preprocessing_metadata(
     return [zscore]
 
 
-def build_channel_metadata(
+def channel_level_metadata(variable: str, level: int | None) -> dict[str, Any]:
+    if level is not None:
+        return {
+            "level_type": "pressure", "level": level, "level_units": "hPa"
+        }
+    height = {
+        "d2m": 2, "t2m": 2,
+        "u10m": 10, "v10m": 10, "ws10m": 10,
+        "u100m": 100, "v100m": 100, "ws100m": 100,
+    }.get(variable)
+    if height is not None:
+        return {
+            "level_type": "height_above_ground",
+            "level": height,
+            "level_units": "m",
+        }
+    if variable in SOIL:
+        return {
+            "level_type": "soil_layer",
+            "level": int(variable[-1]),
+            "level_units": "layer_index",
+        }
+    return {"level_type": "surface"}
+
+
+def build_channel_info(
     channels: Sequence[str] = DYNAMIC_CHANNELS,
     *,
     radiation_seconds: float = DEFAULT_RADIATION_SECONDS,
@@ -208,10 +248,21 @@ def build_channel_metadata(
     for channel in channels:
         variable, level = split_channel(str(channel))
         units, long_name = VARIABLE_METADATA[variable]
+        if level is not None:
+            long_name = f"{long_name} at {level} hPa"
         result[str(channel)] = {
-            "variable": variable, "level": level, "units": units,
             "long_name": long_name,
-            "preprocess": preprocessing_metadata(
+            "source_name": SOURCE_NAMES[variable],
+            "source_units": SOURCE_UNITS[variable],
+            "units": units,
+            **channel_level_metadata(variable, level),
+            "variable_type": (
+                "derived" if variable in DERIVED
+                else "accumulated" if variable in RADIATION or variable == "tp"
+                else "static" if variable == "wmb"
+                else "instantaneous"
+            ),
+            "preprocessing": preprocessing_metadata(
                 str(channel), variable, radiation_seconds=radiation_seconds
             ),
         }
@@ -227,17 +278,18 @@ if len(DYNAMIC_CHANNELS) != CHANNEL_COUNT or len(set(DYNAMIC_CHANNELS)) != CHANN
 
 EXPECTED_CHILDREN = (
     "data", "channel", "lat", "lon", "time", "mean", "std", "mask",
-    "mask/mask_channel", "mask/land_mask", "mask/sea_mask",
+    "mask_channel",
 )
 DATA_ATTRIBUTES = {
-    "long_name": "Preprocessed and normalized ERA5 fields",
-    "data_representation": "channel-dependent; see root channel_metadata",
-    "normalization_mean": "/mean", "normalization_std": "/std",
-}
-CHANNEL_ATTRIBUTES = {
-    "long_name": "weather variable channel name",
-    "description": "String channel labels aligned positionally with data[:, channel, :, :]",
-    "channel_count": CHANNEL_COUNT,
+    "long_name": "meteorological fields",
+    "data_representation": "normalized",
+    # Zarr v3/xarray represents an attribute-level floating _FillValue as the
+    # base64 encoding of one little-endian float64 NaN.  The array's native
+    # fill_value below remains the authoritative float16 NaN.
+    "_FillValue": "AAAAAAAA+H8=",
+    "normalization_method": "channel_dependent",
+    "mean_variable": "mean",
+    "std_variable": "std",
 }
 LAT_ATTRIBUTES = {
     "standard_name": "latitude", "long_name": "latitude",
@@ -249,37 +301,34 @@ LON_ATTRIBUTES = {
 }
 TIME_ATTRIBUTES = {
     "standard_name": "time", "long_name": "time", "axis": "T",
-    "units": "hours since 1979-01-01", "calendar": "proleptic_gregorian",
+    "timezone": "UTC",
 }
 MEAN_ATTRIBUTES = {"alignment": "index-aligned with /channel", "long_name": "Channel normalization mean"}
 STD_ATTRIBUTES = {"alignment": "index-aligned with /channel", "long_name": "Channel normalization standard deviation"}
 MASK_CHANNELS = ("land_mask", "sea_mask")
 MASK_ATTRIBUTES = {
-    "description": "Registry and independently stored spatial masks",
-    "registry": "mask_channel",
+    "long_name": "Binary spatial masks",
+    "mask_type": "binary",
+    "mask_channel_variable": "mask_channel",
+    "source_variable": "lsm",
+    "derivation": "land_mask = lsm > 0.5; sea_mask = 1 - land_mask",
 }
 MASK_CHANNEL_ATTRIBUTES = {
-    "long_name": "Available mask array names",
-    "description": "Ordered registry of arrays stored in the /mask group",
+    "long_name": "Mask channel name",
+    "description": "Labels aligned with mask[mask_channel, :, :]",
 }
-LAND_MASK_ATTRIBUTES = {
-    "long_name": "Fractional land mask",
-    "units": "1",
-    "coordinates": "lat lon",
-    "mask_type": "fractional",
-    "valid_range": [0.0, 1.0],
-    "source_variable": "lsm",
-    "derivation": "clip(lsm, 0.0, 1.0)",
-}
-SEA_MASK_ATTRIBUTES = {
-    "long_name": "Fractional sea mask",
-    "units": "1",
-    "coordinates": "lat lon",
-    "mask_type": "fractional",
-    "valid_range": [0.0, 1.0],
-    "derived_from": "/mask/land_mask",
-    "derivation": "1.0 - land_mask",
-}
+
+
+def channel_attributes(
+    *, radiation_seconds: float = DEFAULT_RADIATION_SECONDS
+) -> dict[str, Any]:
+    return {
+        "long_name": "Weather variable channel code",
+        "channel_info_schema_version": CHANNEL_INFO_SCHEMA_VERSION,
+        "channel_info": build_channel_info(
+            radiation_seconds=radiation_seconds
+        ),
+    }
 
 
 def root_attributes(
@@ -294,17 +343,17 @@ def root_attributes(
         "content_version": CONTENT_VERSION, "data_revision": data_revision,
         "geospatial_lat_range": [-90.0, 90.0],
         "geospatial_lon_range": [0.0, 359.75],
-        "channel_metadata": build_channel_metadata(
-            channels, radiation_seconds=radiation_seconds
-        ),
     }
 
 
 def derive_land_sea_masks(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Create complementary fractional masks while retaining coastal fractions."""
+    """Create complementary binary masks from ERA5 fractional land cover."""
 
-    land = np.clip(np.asarray(values, dtype="f4"), 0.0, 1.0)
-    sea = np.float32(1.0) - land
+    source = np.asarray(values, dtype="f4")
+    if not np.isfinite(source).all():
+        raise ValueError("land-sea mask source contains non-finite values")
+    land = (source > np.float32(0.5)).astype("u1")
+    sea = np.uint8(1) - land
     return land, sea
 
 
@@ -619,8 +668,11 @@ def validate_time_coverage(
         raise ValueError("time coordinate must be a unique continuous six-hour sequence")
     if allow_partial:
         return
-    first_hour = int(str(times[0]).split("T")[1])
-    last_hour = int(str(times[-1]).split("T")[1])
+    hours = (
+        times.astype("datetime64[h]") - times.astype("datetime64[D]")
+    ).astype("timedelta64[h]").astype(int)
+    first_hour = int(hours[0])
+    last_hour = int(hours[-1])
     if first_hour != 0 or last_hour != 18 or len(times) % 4 != 0:
         raise ValueError(
             "input must contain complete UTC days (00, 06, 12, 18); "
@@ -867,7 +919,7 @@ def create_store(
         "channel", data=np.asarray(DYNAMIC_CHANNELS, dtype=str), chunks=(CHANNEL_COUNT,),
         fill_value="",
         dimension_names=("channel",),
-        attributes=CHANNEL_ATTRIBUTES,
+        attributes=channel_attributes(radiation_seconds=radiation_seconds),
     )
     group.create_array(
         "lat", data=TARGET_LAT, chunks=(721,), fill_value=np.nan,
@@ -879,14 +931,12 @@ def create_store(
         dimension_names=("lon",),
         attributes=LON_ATTRIBUTES,
     )
-    encoded_time = (
-        times.astype("datetime64[h]") - np.datetime64("1979-01-01T00", "h")
-    ).astype("i8")
-    time_array = group.create_array(
-        "time", data=encoded_time, chunks=encoded_time.shape, fill_value=0,
-        dimension_names=("time",)
+    datetime_values = times.astype("datetime64[ns]")
+    group.create_array(
+        "time", data=datetime_values, chunks=datetime_values.shape,
+        fill_value=np.datetime64("NaT", "ns"), dimension_names=("time",),
+        attributes=TIME_ATTRIBUTES,
     )
-    time_array.attrs.update(TIME_ATTRIBUTES)
     group.create_array(
         "mean", data=mean, chunks=(CHANNEL_COUNT,), compressors=codecs(),
         fill_value=np.nan,
@@ -899,9 +949,7 @@ def create_store(
         dimension_names=("channel",),
         attributes=STD_ATTRIBUTES,
     )
-    mask = group.create_group("mask")
-    mask.attrs.update(MASK_ATTRIBUTES)
-    mask.create_array(
+    group.create_array(
         "mask_channel", data=np.asarray(MASK_CHANNELS, dtype=str),
         chunks=(len(MASK_CHANNELS),), fill_value="",
         dimension_names=("mask_channel",),
@@ -924,16 +972,11 @@ def add_masks(
         field = dataset["lsm"]
         values = regridder.apply(field, 0 if "time" in field.dims else None)
     land_mask, sea_mask = derive_land_sea_masks(values)
-    mask = group["mask"]
-    mask.create_array(
-        "land_mask", data=land_mask, chunks=(721, 1440),
-        compressors=codecs(), fill_value=np.nan, dimension_names=("lat", "lon"),
-        attributes=LAND_MASK_ATTRIBUTES,
-    )
-    mask.create_array(
-        "sea_mask", data=sea_mask, chunks=(721, 1440),
-        compressors=codecs(), fill_value=np.nan, dimension_names=("lat", "lon"),
-        attributes=SEA_MASK_ATTRIBUTES,
+    masks = np.stack((land_mask, sea_mask), axis=0)
+    group.create_array(
+        "mask", data=masks, chunks=(1, 721, 1440), compressors=codecs(),
+        fill_value=np.uint8(0), dimension_names=("mask_channel", "lat", "lon"),
+        attributes=MASK_ATTRIBUTES,
     )
 
 
@@ -982,7 +1025,8 @@ def validate_output(
     radiation_seconds: float,
 ) -> None:
     expected_members = {
-        "data", "time", "channel", "lat", "lon", "mean", "std", "mask"
+        "data", "time", "channel", "lat", "lon", "mean", "std", "mask",
+        "mask_channel",
     }
     for consolidated in (False, True):
         group = zarr.open_group(
@@ -1001,49 +1045,55 @@ def validate_output(
             raise ValueError("data shape mismatch")
         if data.chunks != (1, channel_chunk, 721, 1440) or data.dtype != np.dtype("f2"):
             raise ValueError("data chunk or dtype mismatch")
+        if not np.isnan(data.fill_value):
+            raise ValueError("data fill_value must be NaN")
         if dict(data.attrs) != DATA_ATTRIBUTES:
             raise ValueError("data attributes mismatch")
         if [str(value) for value in group["channel"][:].tolist()] != list(DYNAMIC_CHANNELS):
             raise ValueError("channel coordinate mismatch")
-        if dict(group["channel"].attrs) != CHANNEL_ATTRIBUTES:
+        expected_channel_attributes = channel_attributes(
+            radiation_seconds=radiation_seconds
+        )
+        if dict(group["channel"].attrs) != expected_channel_attributes:
             raise ValueError("channel attributes mismatch")
+        channel_info = dict(group["channel"].attrs["channel_info"])
+        if set(channel_info) != set(DYNAMIC_CHANNELS):
+            raise ValueError("channel and channel_info keys differ")
         if not np.array_equal(group["lat"][:], TARGET_LAT) or not np.array_equal(group["lon"][:], TARGET_LON):
             raise ValueError("coordinate grid mismatch")
         if dict(group["lat"].attrs) != LAT_ATTRIBUTES or dict(group["lon"].attrs) != LON_ATTRIBUTES:
             raise ValueError("coordinate attributes mismatch")
         if dict(group["time"].attrs) != TIME_ATTRIBUTES:
             raise ValueError("time attributes mismatch")
+        if not np.issubdtype(group["time"].dtype, np.datetime64):
+            raise ValueError("time dtype must be datetime64")
+        if not np.array_equal(
+            np.asarray(group["time"][:]).astype("datetime64[ns]"),
+            times.astype("datetime64[ns]"),
+        ):
+            raise ValueError("time values mismatch")
         if group["mean"].shape != (CHANNEL_COUNT,) or group["std"].shape != (CHANNEL_COUNT,):
             raise ValueError("statistics shape mismatch")
         if dict(group["mean"].attrs) != MEAN_ATTRIBUTES or dict(group["std"].attrs) != STD_ATTRIBUTES:
             raise ValueError("statistics attributes mismatch")
         if not np.isfinite(group["mean"][:]).all() or not np.all(group["std"][:] > 0):
             raise ValueError("statistics values invalid")
-        mask = group["mask"]
-        if dict(mask.attrs) != MASK_ATTRIBUTES:
-            raise ValueError("mask group attributes mismatch")
-        if set(mask.keys()) != {"mask_channel", *MASK_CHANNELS}:
-            raise ValueError(f"unexpected mask members: {list(mask.keys())}")
-        registered = [str(value) for value in mask["mask_channel"][:].tolist()]
+        registered = [str(value) for value in group["mask_channel"][:].tolist()]
         if registered != list(MASK_CHANNELS):
             raise ValueError("mask registry mismatch")
-        if dict(mask["mask_channel"].attrs) != MASK_CHANNEL_ATTRIBUTES:
+        if dict(group["mask_channel"].attrs) != MASK_CHANNEL_ATTRIBUTES:
             raise ValueError("mask registry attributes mismatch")
-        if mask["land_mask"].shape != (721, 1440) or mask["sea_mask"].shape != (721, 1440):
+        mask = group["mask"]
+        if mask.shape != (len(MASK_CHANNELS), 721, 1440):
             raise ValueError("mask shape mismatch")
-        if mask["land_mask"].dtype != np.dtype("f4") or mask["sea_mask"].dtype != np.dtype("f4"):
+        if mask.chunks != (1, 721, 1440) or mask.dtype != np.dtype("u1"):
             raise ValueError("mask dtype mismatch")
-        if dict(mask["land_mask"].attrs) != LAND_MASK_ATTRIBUTES:
-            raise ValueError("land mask attributes mismatch")
-        if dict(mask["sea_mask"].attrs) != SEA_MASK_ATTRIBUTES:
-            raise ValueError("sea mask attributes mismatch")
-        land = np.asarray(mask["land_mask"][:], dtype="f4")
-        sea = np.asarray(mask["sea_mask"][:], dtype="f4")
-        if not np.isfinite(land).all() or not np.isfinite(sea).all():
-            raise ValueError("mask contains non-finite values")
-        if np.any((land < 0.0) | (land > 1.0)) or np.any((sea < 0.0) | (sea > 1.0)):
-            raise ValueError("mask values fall outside [0, 1]")
-        if not np.allclose(land + sea, 1.0, rtol=0.0, atol=1e-6):
+        if dict(mask.attrs) != MASK_ATTRIBUTES:
+            raise ValueError("mask attributes mismatch")
+        masks = np.asarray(mask[:], dtype="u1")
+        if not np.isin(masks, (0, 1)).all():
+            raise ValueError("mask values must be binary")
+        if not np.array_equal(masks[0] + masks[1], np.ones((721, 1440), dtype="u1")):
             raise ValueError("land and sea masks are not complementary")
 
         dataset = xr.open_zarr(str(path), consolidated=consolidated)
