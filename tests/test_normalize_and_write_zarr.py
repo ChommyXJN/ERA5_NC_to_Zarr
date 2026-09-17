@@ -64,7 +64,9 @@ class LatitudeConventionTests(unittest.TestCase):
         self.assertFalse(any(path.startswith("auxiliary") for path in MODULE.EXPECTED_CHILDREN))
 
     def test_channel_info_is_complete_and_key_aligned(self) -> None:
-        attributes = MODULE.channel_attributes()
+        mean = np.arange(MODULE.CHANNEL_COUNT, dtype="f4")
+        std = np.arange(1, MODULE.CHANNEL_COUNT + 1, dtype="f4")
+        attributes = MODULE.channel_attributes(mean=mean, std=std)
         info = attributes["channel_info"]
         self.assertEqual(set(MODULE.DYNAMIC_CHANNELS), set(info))
         required = {
@@ -76,6 +78,9 @@ class LatitudeConventionTests(unittest.TestCase):
         self.assertEqual(info["q500"]["level"], 500)
         self.assertEqual(info["q500"]["level_units"], "hPa")
         self.assertNotIn("level", info["msl"])
+        t2m_index = MODULE.DYNAMIC_CHANNELS.index("t2m")
+        self.assertEqual(info["t2m"]["scale_factor"], float(std[t2m_index]))
+        self.assertEqual(info["t2m"]["add_offset"], float(mean[t2m_index]))
 
     def test_data_and_time_metadata_follow_schema(self) -> None:
         self.assertEqual(MODULE.DATA_ATTRIBUTES["data_representation"], "normalized")

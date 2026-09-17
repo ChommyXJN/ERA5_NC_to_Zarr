@@ -242,10 +242,18 @@ def channel_level_metadata(variable: str, level: int | None) -> dict[str, Any]:
 def build_channel_info(
     channels: Sequence[str] = DYNAMIC_CHANNELS,
     *,
+    mean: np.ndarray,
+    std: np.ndarray,
     radiation_seconds: float = DEFAULT_RADIATION_SECONDS,
 ) -> dict[str, dict[str, Any]]:
+    mean_values = np.asarray(mean, dtype="f4").reshape(-1)
+    std_values = np.asarray(std, dtype="f4").reshape(-1)
+    if len(mean_values) != len(channels) or len(std_values) != len(channels):
+        raise ValueError("mean/std must align positionally with channels")
+    if not np.isfinite(mean_values).all() or not np.all(std_values > 0):
+        raise ValueError("channel scale_factor/add_offset values are invalid")
     result: dict[str, dict[str, Any]] = {}
-    for channel in channels:
+    for index, channel in enumerate(channels):
         variable, level = split_channel(str(channel))
         units, long_name = VARIABLE_METADATA[variable]
         if level is not None:
@@ -255,6 +263,11 @@ def build_channel_info(
             "source_name": SOURCE_NAMES[variable],
             "source_units": SOURCE_UNITS[variable],
             "units": units,
+            "scale_factor": float(std_values[index]),
+            "add_offset": float(mean_values[index]),
+            "scale_offset_formula": (
+                "preprocessed_value = normalized_value * scale_factor + add_offset"
+            ),
             **channel_level_metadata(variable, level),
             "variable_type": (
                 "derived" if variable in DERIVED
@@ -290,6 +303,11 @@ DATA_ATTRIBUTES = {
     "normalization_method": "channel_dependent",
     "mean_variable": "mean",
     "std_variable": "std",
+    "scale_factor_location": "channel.channel_info[*].scale_factor",
+    "add_offset_location": "channel.channel_info[*].add_offset",
+    "inverse_transform": (
+        "preprocessed_value = data * scale_factor + add_offset"
+    ),
 }
 LAT_ATTRIBUTES = {
     "standard_name": "latitude", "long_name": "latitude",
@@ -320,12 +338,17 @@ MASK_CHANNEL_ATTRIBUTES = {
 
 
 def channel_attributes(
-    *, radiation_seconds: float = DEFAULT_RADIATION_SECONDS
+    *,
+    mean: np.ndarray,
+    std: np.ndarray,
+    radiation_seconds: float = DEFAULT_RADIATION_SECONDS,
 ) -> dict[str, Any]:
     return {
         "long_name": "Weather variable channel code",
         "channel_info_schema_version": CHANNEL_INFO_SCHEMA_VERSION,
         "channel_info": build_channel_info(
+            mean=mean,
+            std=std,
             radiation_seconds=radiation_seconds
         ),
     }
@@ -919,7 +942,9 @@ def create_store(
         "channel", data=np.asarray(DYNAMIC_CHANNELS, dtype=str), chunks=(CHANNEL_COUNT,),
         fill_value="",
         dimension_names=("channel",),
-        attributes=channel_attributes(radiation_seconds=radiation_seconds),
+        attributes=channel_attributes(
+            mean=mean, std=std, radiation_seconds=radiation_seconds
+        ),
     )
     group.create_array(
         "lat", data=TARGET_LAT, chunks=(721,), fill_value=np.nan,
@@ -1052,6 +1077,8 @@ def validate_output(
         if [str(value) for value in group["channel"][:].tolist()] != list(DYNAMIC_CHANNELS):
             raise ValueError("channel coordinate mismatch")
         expected_channel_attributes = channel_attributes(
+            mean=np.asarray(group["mean"][:], dtype="f4"),
+            std=np.asarray(group["std"][:], dtype="f4"),
             radiation_seconds=radiation_seconds
         )
         if dict(group["channel"].attrs) != expected_channel_attributes:
@@ -1059,6 +1086,14 @@ def validate_output(
         channel_info = dict(group["channel"].attrs["channel_info"])
         if set(channel_info) != set(DYNAMIC_CHANNELS):
             raise ValueError("channel and channel_info keys differ")
+        stored_mean = np.asarray(group["mean"][:], dtype="f4")
+        stored_std = np.asarray(group["std"][:], dtype="f4")
+        for index, channel_name in enumerate(DYNAMIC_CHANNELS):
+            info = channel_info[channel_name]
+            if np.float32(info["scale_factor"]) != stored_std[index]:
+                raise ValueError(f"{channel_name} scale_factor differs from /std")
+            if np.float32(info["add_offset"]) != stored_mean[index]:
+                raise ValueError(f"{channel_name} add_offset differs from /mean")
         if not np.array_equal(group["lat"][:], TARGET_LAT) or not np.array_equal(group["lon"][:], TARGET_LON):
             raise ValueError("coordinate grid mismatch")
         if dict(group["lat"].attrs) != LAT_ATTRIBUTES or dict(group["lon"].attrs) != LON_ATTRIBUTES:

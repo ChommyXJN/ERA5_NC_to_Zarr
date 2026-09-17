@@ -298,6 +298,9 @@ const和纬度权重暂不发布到最终Zarr。
 - `/channel` 属性中的 `channel_info` 保存116项通道语义，主数据顺序仅由
   `/channel[:]` 决定；两者的键集合必须完全一致；
 - 每个通道保存source、units、level类型、variable类型和完整preprocessing；
+- 每个通道同时保存 `scale_factor=std` 和 `add_offset=mean`，用于
+  `preprocessed_value = normalized_value * scale_factor + add_offset`；根目录
+  `/std`、`/mean` 数组继续保留，校验器要求两种表示逐Channel完全一致；
 - 9个根数组的inline consolidated metadata。
 
 所有内容先写入隐藏staging目录。数据、元数据和发布前校验全部成功后才原子发布；

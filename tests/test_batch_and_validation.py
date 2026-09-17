@@ -131,7 +131,9 @@ class ValidationSamplingTests(unittest.TestCase):
 
     def test_metadata_error_identifies_changed_channel(self) -> None:
         pipeline = VALIDATE.load_pipeline()
-        attributes = pipeline.channel_attributes()
+        mean = np.zeros(pipeline.CHANNEL_COUNT, dtype="f4")
+        std = np.ones(pipeline.CHANNEL_COUNT, dtype="f4")
+        attributes = pipeline.channel_attributes(mean=mean, std=std)
         attributes["channel_info"] = dict(attributes["channel_info"])
         attributes["channel_info"]["t2m"] = dict(
             attributes["channel_info"]["t2m"], units="invalid"
@@ -145,9 +147,13 @@ class ValidationSamplingTests(unittest.TestCase):
 
         class FakeGroup:
             def __getitem__(self, key):
-                if key != "channel":
-                    raise KeyError(key)
-                return FakeChannel()
+                if key == "channel":
+                    return FakeChannel()
+                if key == "mean":
+                    return mean
+                if key == "std":
+                    return std
+                raise KeyError(key)
 
         with self.assertRaisesRegex(ValueError, "differs for=t2m"):
             VALIDATE.validate_channel_metadata(FakeGroup(), pipeline)

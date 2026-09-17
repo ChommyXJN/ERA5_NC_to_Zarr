@@ -93,6 +93,8 @@ def validate_channel_metadata(group: zarr.Group, pipeline) -> None:
             details.append("unexpected=" + ",".join(extra))
         raise ValueError("channel_info keys differ from /channel: " + "; ".join(details))
     expected = pipeline.channel_attributes(
+        mean=np.asarray(group["mean"][:], dtype="f4"),
+        std=np.asarray(group["std"][:], dtype="f4"),
         radiation_seconds=pipeline.DEFAULT_RADIATION_SECONDS
     )
     changed = [
