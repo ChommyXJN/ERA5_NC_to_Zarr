@@ -42,8 +42,26 @@ class LatitudeConventionTests(unittest.TestCase):
         np.testing.assert_array_equal(result[:, 0], MODULE.TARGET_LAT)
         np.testing.assert_array_equal(result[:, -1], MODULE.TARGET_LAT)
 
-    def test_content_version_is_v2(self) -> None:
-        self.assertEqual(MODULE.CONTENT_VERSION, "v2")
+    def test_content_version_is_v3(self) -> None:
+        self.assertEqual(MODULE.CONTENT_VERSION, "v3")
+        self.assertEqual(MODULE.SCHEMA_VERSION, "2.0")
+
+    def test_fractional_masks_are_clipped_and_complementary(self) -> None:
+        source = np.array([[-0.1, 0.25, 0.5, 0.75, 1.1]], dtype="f4")
+        land, sea = MODULE.derive_land_sea_masks(source)
+        np.testing.assert_array_equal(
+            land, np.array([[0.0, 0.25, 0.5, 0.75, 1.0]], dtype="f4")
+        )
+        np.testing.assert_array_equal(sea, np.float32(1.0) - land)
+        np.testing.assert_array_equal(land + sea, np.ones_like(land))
+
+    def test_v3_paths_place_statistics_at_root_and_masks_in_group(self) -> None:
+        self.assertIn("mean", MODULE.EXPECTED_CHILDREN)
+        self.assertIn("std", MODULE.EXPECTED_CHILDREN)
+        self.assertIn("mask/mask_channel", MODULE.EXPECTED_CHILDREN)
+        self.assertIn("mask/land_mask", MODULE.EXPECTED_CHILDREN)
+        self.assertIn("mask/sea_mask", MODULE.EXPECTED_CHILDREN)
+        self.assertFalse(any(path.startswith("auxiliary") for path in MODULE.EXPECTED_CHILDREN))
 
 if __name__ == "__main__":
     unittest.main()

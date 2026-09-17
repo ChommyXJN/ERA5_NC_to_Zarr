@@ -80,7 +80,7 @@ def validate_root_metadata(group: zarr.Group, pipeline) -> None:
         differing.remove("channel_metadata")
     if differing:
         details.append("different=" + ",".join(differing))
-    raise ValueError("root metadata does not match the v2 schema: " + "; ".join(details))
+    raise ValueError("root metadata does not match the v3 schema: " + "; ".join(details))
 
 
 def inspect_values(
@@ -208,6 +208,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"time: {times[0]} .. {times[-1]} ({len(times)} steps)")
     print(f"shape: {consolidated['data'].shape}")
     print("latitude: 90 .. -90, strictly decreasing by -0.25 degrees")
+    print("masks: land_mask and sea_mask are finite complementary fractions")
     print("metadata: non-consolidated and consolidated reads passed")
 
 

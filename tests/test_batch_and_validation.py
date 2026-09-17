@@ -130,7 +130,7 @@ class ValidationSamplingTests(unittest.TestCase):
     def test_metadata_error_identifies_changed_channel(self) -> None:
         pipeline = VALIDATE.load_pipeline()
         attributes = pipeline.root_attributes(
-            "era5.20250101.c116.p25.h6.v2",
+            "era5.20250101.c116.p25.h6.v3",
             "20260915",
             radiation_seconds=pipeline.DEFAULT_RADIATION_SECONDS,
         )

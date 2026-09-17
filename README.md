@@ -1,11 +1,11 @@
 # ERA5 NC to Zarr
 
 将 ERA5 NetCDF（`.nc`）转换为适合分析和机器学习使用的 Zarr v3
-数据集。本项目固定输出116个动态通道，内容版本为 `v2`，纬度保持 ERA5
+数据集。本项目固定输出116个动态通道，内容版本为 `v3`，纬度保持 ERA5
 原始的北到南顺序 `90° → -90°`。
 
-> `Zarr v3` 指存储格式；文件名中的 `.v2.zarr` 和根属性
-> `content_version=v2` 指本项目的数据内容版本，两者含义不同。
+> `Zarr v3` 指存储格式；文件名中的 `.v3.zarr` 和根属性
+> `content_version=v3` 指本项目的数据内容版本，两者含义不同。
 
 ## 处理流程
 
@@ -263,7 +263,7 @@ lon: 0 → 359.75，1440点，步长 +0.25°
 单日输出示例：
 
 ```text
-era5.20250101.c116.p25.h6.v2.zarr
+era5.20250101.c116.p25.h6.v3.zarr
 ```
 
 主要节点：
@@ -274,13 +274,16 @@ time                                  (time)
 channel                               (channel)
 lat                                   (lat)
 lon                                   (lon)
-auxiliary/mean                        (channel) float32
-auxiliary/std                         (channel) float32
-auxiliary/land_sea_mask               (lat, lon) float32
-auxiliary/slope_of_sub_gridscale_orography
-auxiliary/standard_deviation_of_orography
-auxiliary/surface_geopotential
+mean                                  (channel) float32
+std                                   (channel) float32
+mask/mask_channel                     (mask_channel) string
+mask/land_mask                        (lat, lon) float32
+mask/sea_mask                         (lat, lon) float32
 ```
+
+`land_mask` 保留ERA5 `lsm` 的 `[0, 1]` 陆地比例并裁剪浮点越界，`sea_mask`
+严格由 `1 - land_mask` 派生。两者是独立数组，`mask/mask_channel` 是mask名称的
+有序注册表。其他静态场、const和纬度权重暂不发布到最终Zarr。
 
 `data` 默认chunk为 `(1, 116, 721, 1440)`，可通过 `--channel-chunk` 调整。
 压缩使用Blosc Zstandard level 5和bitshuffle。输入默认按4个时间步缓存，可通过
@@ -288,11 +291,11 @@ auxiliary/surface_geopotential
 
 根 `zarr.json` 包含：
 
-- `dataset_id`、`schema_version`、`content_version=v2`、`data_revision`；
+- `dataset_id`、`schema_version=2.0`、`content_version=v3`、`data_revision`；
 - 经纬度覆盖范围；
 - 按固定顺序保存的116项 `channel_metadata`；
 - 每个通道的variable、level、units、long_name和完整preprocess；
-- 12个子节点的inline consolidated metadata。
+- 11个子节点的inline consolidated metadata。
 
 所有内容先写入隐藏staging目录。数据、元数据和发布前校验全部成功后才原子发布；
 已有输出只有指定 `--overwrite` 才会替换。
@@ -301,7 +304,7 @@ auxiliary/surface_geopotential
 
 ```powershell
 python .\4_validate_zarr.py `
-  --zarr "E:\era5_release_output\era5.202501.c116.p25.h6.v2.zarr" `
+  --zarr "E:\era5_release_output\era5.202501.c116.p25.h6.v3.zarr" `
   --sample-count 3
 ```
 
@@ -309,11 +312,12 @@ python .\4_validate_zarr.py `
 
 - 时间唯一、连续、每6小时一次且覆盖完整UTC日；
 - consolidated和non-consolidated两种读取方式；
-- 根属性、116通道元数据和12个元数据节点；
+- 根属性、116通道元数据和11个元数据节点；
 - Zarr目录名与根属性 `dataset_id` 一致；
 - data的shape、dtype和chunks；
 - 纬度严格 `90→-90`、步长 `-0.25°`；
-- 经度、时间、channel、mean/std和静态场；
+- 经度、时间、channel、根目录mean/std和mask注册表；
+- land/sea比例范围、有限性和严格互补关系；
 - 均匀抽取首、中、末等时间步读取 `z500/t2m/q500/swh`；
 - 抽样通道包含有限值，全部抽样数据不含无穷值。
 
@@ -372,8 +376,8 @@ work/YYYYMMDD_YYYYMMDD/
 
 默认清理的仅是脚本1在工作区生成的隔离副本，绝不会删除 `--source` 中的用户
 原始数据。全部逐日单位转换文件必须保留到脚本3完成，因此仍需为
-`unit_converted` 预留足够空间。4个静态场只在批次首日保存一次，脚本3从这一份
-静态数据生成Zarr的辅助数组，不会为每一天重复写入静态NC。
+`unit_converted` 预留足够空间。4个静态输入场只在批次首日保存一次；当前v3产物
+仅使用其中的 `lsm` 生成land/sea比例mask，其他静态场暂不发布。
 
 ## 测试
 
@@ -401,7 +405,7 @@ Copy-Item .\tests\integration_paths.example.json .\tests\integration_paths.json
   "source": "E:\\era5_2025.01-2026.07_nc",
   "extracted_day": "E:\\era5_2025.01.01_nc",
   "unit_converted_day": "E:\\era5_2025.01.01_unit_converted_nc",
-  "zarr": "E:\\era5_release_output\\era5.20250101.c116.p25.h6.v2.zarr"
+  "zarr": "E:\\era5_release_output\\era5.20250101.c116.p25.h6.v3.zarr"
 }
 ```
 
