@@ -707,13 +707,13 @@ def dataset_label(times: np.ndarray, allow_partial: bool) -> str:
     start_day = str(times[0].astype("datetime64[D]")).replace("-", "")
     end_day = str(times[-1].astype("datetime64[D]")).replace("-", "")
     if allow_partial or start_day == end_day:
-        return start_day if start_day == end_day else f"{start_day}-{end_day}"
+        return start_day if start_day == end_day else f"{start_day}_{end_day}"
     start_month, end_month = start_day[:6], end_day[:6]
     end_year, end_month_number = int(end_day[:4]), int(end_day[4:6])
     last_calendar_day = calendar.monthrange(end_year, end_month_number)[1]
     if start_day[6:] == "01" and int(end_day[6:]) == last_calendar_day:
-        return start_month if start_month == end_month else f"{start_month}-{end_month}"
-    return f"{start_day}-{end_day}"
+        return start_month if start_month == end_month else f"{start_month}_{end_month}"
+    return f"{start_day}_{end_day}"
 
 
 def open_day(

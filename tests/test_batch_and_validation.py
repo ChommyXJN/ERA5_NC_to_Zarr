@@ -24,6 +24,7 @@ def load(name: str, filename: str):
 BATCH = load("batch_convert", "5_batch_convert.py")
 VALIDATE = load("validate_zarr", "4_validate_zarr.py")
 EXTRACT = load("extract_single_day", "1_extract_single_day.py")
+DIRECT = load("direct_raw_to_zarr", "7_direct_raw_to_zarr.py")
 PIPELINE = VALIDATE.load_pipeline()
 
 
@@ -81,13 +82,13 @@ class BatchDateTests(unittest.TestCase):
     def test_range_label_uses_months_for_complete_calendar_range(self) -> None:
         self.assertEqual(
             BATCH.range_label(date(2025, 1, 1), date(2026, 7, 31)),
-            "202501-202607",
+            "202501_202607",
         )
 
     def test_range_label_uses_days_for_partial_calendar_range(self) -> None:
         self.assertEqual(
             BATCH.range_label(date(2025, 1, 2), date(2025, 1, 31)),
-            "20250102-20250131",
+            "20250102_20250131",
         )
 
     def test_date_partition_is_selected_for_daily_or_auto_mode(self) -> None:
@@ -116,6 +117,19 @@ class BatchDateTests(unittest.TestCase):
                     marker, {"stage": "extract", "date": "2025-01-02"}
                 )
             )
+
+
+class DirectConversionDateTests(unittest.TestCase):
+    def test_direct_range_is_inclusive(self) -> None:
+        self.assertEqual(
+            DIRECT.dates_inclusive(date(2025, 1, 31), date(2025, 2, 2)),
+            [date(2025, 1, 31), date(2025, 2, 1), date(2025, 2, 2)],
+        )
+
+    def test_direct_expected_times_are_six_hourly(self) -> None:
+        times = DIRECT.expected_times([date(2025, 1, 1), date(2025, 1, 2)])
+        self.assertEqual(len(times), 8)
+        self.assertTrue(np.all(np.diff(times) == np.timedelta64(6, "h")))
 
 
 class ValidationSamplingTests(unittest.TestCase):

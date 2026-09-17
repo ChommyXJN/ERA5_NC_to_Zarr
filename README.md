@@ -12,11 +12,7 @@
 ```text
 多年/月度或逐日 ERA5 NetCDF
   │
-  ├─ 1_extract_single_day.py（按需抽取一天）
-  ▼
-单日原始 NetCDF 目录树
-  │
-  ├─ 2_convert_units_single_day.py
+  ├─ 2_convert_units_single_day.py（直接选日并转换）
   ▼
 单日 *.unit_converted.nc 目录树
   │
@@ -27,17 +23,22 @@
   ├─ 4_validate_zarr.py
   ▼
 结构、元数据和通用数值健康校验
-
-5_batch_convert.py 可按日期范围自动串联脚本1至4。
 ```
+
+5_batch_convert.py 可按日期范围自动串联脚本2至4；脚本1保留为独立抽样和调试工具。
+
+追求吞吐量且不需要保留逐日单位转换NC时，可使用
+`7_direct_raw_to_zarr.py`。它在内存中完成与脚本1→2→3相同的日期选择、单位转换、
+派生、归一化和float16写入，并允许多个日期并行直写互不重叠的Zarr时间块。
 
 职责边界：
 
-- 脚本1只选择指定日期，保留原始变量、单位和目录结构。
-- 脚本2执行物理单位转换、TP预处理和派生风速，不归一化、不重网格。
+- 脚本1按需导出指定日期，保留原始变量、单位和目录结构，不进入批量主链路。
+- 脚本2直接从月度、共享逐日或单日目录选择日期，执行物理单位转换、TP预处理和派生风速，不归一化、不重网格。
 - 脚本3校验转换状态，进行重网格、归一化、Zarr写入和发布前校验。
 - 脚本4独立复核最终Zarr的结构、元数据和抽样数值。
 - 脚本5负责批量调度、断点续跑、工作区清理和最终校验。
+- 脚本7是高速生产入口，不生成中间NC；脚本1至6仍作为可审计参考链路。
 
 ## 环境和必需文件
 
@@ -69,7 +70,7 @@ README.md
 
 ## 原始输入目录
 
-脚本1和脚本5支持三种布局。
+脚本1、脚本2和脚本5支持三种布局。
 
 多年/月度库：
 
@@ -120,10 +121,14 @@ python .\1_extract_single_day.py `
 ```powershell
 python .\2_convert_units_single_day.py `
   --date 2025-01-01 `
-  --source "E:\era5_2025.01.01_nc" `
+  --source "E:\era5_monthly_nc" `
+  --input-mode auto `
   --output "E:\era5_2025.01.01_unit_converted_nc" `
   --overwrite
 ```
+
+脚本2在内存中只选择指定日期的记录并直接写出单位转换文件，不生成单日原始NC
+副本；它也继续兼容脚本1生成的独立单日目录。
 
 输出文件统一命名为：
 
@@ -348,23 +353,21 @@ python .\5_batch_convert.py `
 确认后删除 `--plan`。处理过程为：
 
 ```text
-首日：脚本1隔离动态数据和唯一静态场 → 脚本2单位转换
-后续每天：脚本1隔离动态数据 → 脚本2单位转换
+首日：脚本2直接选择当天动态数据和唯一静态场并完成单位转换
+后续每天：脚本2直接选择当天动态数据并完成单位转换
 全部日期：脚本3生成一个完整Zarr → 脚本4独立校验
 ```
 
-日期分区的daily输入已经是独立单日目录，会直接交给脚本2，不会复制。月度库或
-共享逐日树会先在工作区形成隔离日目录。
+月度库、共享逐日树和日期分区输入都直接交给脚本2。月度文件只读取所需日期，
+不再在工作区形成单日原始副本。
 
 工作目录：
 
 ```text
 work/YYYYMMDD_YYYYMMDD/
-├─ extracted/              # 默认在每天转换成功后清理当天副本
 ├─ unit_converted/
 │  └─ group/variable/year/YYYY.MM.DD.unit_converted.nc
 └─ state/
-   ├─ YYYY-MM-DD.extract.json
    └─ YYYY-MM-DD.convert.json
 ```
 
@@ -373,17 +376,39 @@ work/YYYYMMDD_YYYYMMDD/
 - 每个阶段成功后才原子写入完成标记；
 - 同时检查标记内容、脚本SHA-256和当天全部必需文件；
 - 文件缺失、标记不匹配或脚本变化时自动重做对应日期；
-- `--force-days` 强制重做每日抽取和单位转换；
-- `--keep-extracted` 保留工作区中的原始日副本；
+- `--force-days` 强制重做每日单位转换；
 - `--overwrite-zarr` 允许脚本3替换同名最终Zarr；
 - `--validate-only` 只准备日文件并运行脚本3的 `--dry-run`；
 - `--skip-final-validation` 完全跳过脚本4，不推荐；
 - `--time-block` 和 `--channel-chunk` 会传递给脚本3。
 
-默认清理的仅是脚本1在工作区生成的隔离副本，绝不会删除 `--source` 中的用户
-原始数据。全部逐日单位转换文件必须保留到脚本3完成，因此仍需为
+批量流程不会修改或删除 `--source` 中的用户原始数据。全部逐日单位转换文件必须
+保留到脚本3完成，因此仍需为
 `unit_converted` 预留足够空间。4个静态输入场只在批次首日保存一次；当前v3产物
 仅使用其中的 `lsm` 生成land/sea比例mask，其他静态场暂不发布。
+
+## 脚本7：原始NC直接并行写入Zarr
+
+脚本7适用于只需要最终Zarr、不需要保留逐日中间NC的生产任务：
+
+```powershell
+python .\7_direct_raw_to_zarr.py `
+  --source "E:\era5_2025.01-2026.07_nc" `
+  --input-mode auto `
+  --output "E:\era5_release_output" `
+  --start 2025-01-01 `
+  --end 2026-07-31 `
+  --workers 8
+```
+
+建议先用 `--dry-run` 检查首尾日期文件和mean/std，再正式运行。每个worker在内存中
+直接完成一天4个时次的单位转换、派生、重网格、归一化和float16转换，并写入独立
+的Zarr时间块，因此不会创建 `extracted` 或 `unit_converted` 目录。单worker约需
+1 GiB输出缓冲区，实际内存还包括当天原始变量；增加worker前应同时考虑内存、源
+存储并发读取和目标存储写入能力。
+
+脚本7复用脚本3的通道协议、统计量、元数据、压缩和发布前结构检查。它不执行脚本4
+的独立抽样校验；需要时可在产物完成后单独运行脚本4。
 
 ## 测试
 
